@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"sort"
 	"strings"
@@ -43,6 +44,8 @@ type loadBalancer struct {
 	routingAlgorithm string
 	roundRobinCount  atomic.Uint64
 	endpointWeights  map[string]int64
+	randMu           sync.Mutex
+	random           *rand.Rand
 
 	stopped    bool
 	updateLock sync.RWMutex
@@ -150,6 +153,7 @@ func newLoadBalancer(logger *zap.Logger, cfg component.Config, factory component
 		exporters:        map[string]*wrappedExporter{},
 		endpointWeights:  staticEndpointWeights(oCfg),
 		routingAlgorithm: oCfg.routingAlgorithm(),
+		random:           rand.New(rand.NewPCG(0, 0)),
 	}, nil
 }
 
@@ -259,6 +263,8 @@ func (lb *loadBalancer) routingEndpoint(identifier []byte) string {
 		return lb.leastConnectionsEndpoint()
 	case leastResponseTimeRoutingAlgorithmStr:
 		return lb.leastResponseTimeEndpoint()
+	case powerOfTwoChoicesRoutingAlgorithmStr:
+		return lb.powerOfTwoChoicesEndpoint(identifier)
 	default:
 		return lb.ring.endpointFor(identifier)
 	}
@@ -386,6 +392,16 @@ func (lb *loadBalancer) leastResponseTimeEndpoint() string {
 	return endpoints[0]
 }
 
+func (lb *loadBalancer) powerOfTwoChoicesEndpoint(identifier []byte) string {
+	endpoints := lb.availableEndpoints(true)
+	if len(endpoints) < 2 {
+		return lb.ring.endpointFor(identifier)
+	}
+
+	first, second := lb.sampleTwoEndpoints(endpoints)
+	return lb.pickLowerInflight(first, second)
+}
+
 func (lb *loadBalancer) endpointWeight(endpoint string) int64 {
 	if exp, found := lb.exporters[endpointWithPort(endpoint)]; found {
 		return exp.stats().weight
@@ -397,6 +413,38 @@ func (lb *loadBalancer) endpointWeight(endpoint string) int64 {
 		return weight
 	}
 	return 1
+}
+
+func (lb *loadBalancer) sampleTwoEndpoints(endpoints []string) (string, string) {
+	if len(endpoints) == 2 {
+		return endpoints[0], endpoints[1]
+	}
+
+	lb.randMu.Lock()
+	firstIdx := lb.random.IntN(len(endpoints))
+	secondIdx := lb.random.IntN(len(endpoints) - 1)
+	if secondIdx >= firstIdx {
+		secondIdx++
+	}
+	lb.randMu.Unlock()
+
+	return endpoints[firstIdx], endpoints[secondIdx]
+}
+
+func (lb *loadBalancer) pickLowerInflight(first string, second string) string {
+	firstInflight := lb.exporters[endpointWithPort(first)].stats().inflightRequests
+	secondInflight := lb.exporters[endpointWithPort(second)].stats().inflightRequests
+
+	if firstInflight < secondInflight {
+		return first
+	}
+	if secondInflight < firstInflight {
+		return second
+	}
+	if first < second {
+		return first
+	}
+	return second
 }
 
 func staticEndpointWeights(cfg *Config) map[string]int64 {
