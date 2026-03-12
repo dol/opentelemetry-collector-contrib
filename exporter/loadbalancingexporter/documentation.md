@@ -6,6 +6,48 @@
 
 The following telemetry is emitted by this component.
 
+### otelcol_loadbalancer_backend_consecutive_failures
+
+Current number of consecutive failures for each endpoint.
+
+| Unit | Metric Type | Value Type | Stability |
+| ---- | ----------- | ---------- | --------- |
+| {failures} | Gauge | Int | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
+
+### otelcol_loadbalancer_backend_healthy
+
+Health state for each endpoint represented as 1 for healthy and 0 for unhealthy.
+
+| Unit | Metric Type | Value Type | Stability |
+| ---- | ----------- | ---------- | --------- |
+| {state} | Gauge | Int | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
+
+### otelcol_loadbalancer_backend_inflight
+
+Current number of in-flight requests for each endpoint.
+
+| Unit | Metric Type | Value Type | Stability |
+| ---- | ----------- | ---------- | --------- |
+| {requests} | Gauge | Int | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
+
 ### otelcol_loadbalancer_backend_latency
 
 Response latency in ms for the backends.
@@ -13,6 +55,20 @@ Response latency in ms for the backends.
 | Unit | Metric Type | Value Type | Stability |
 | ---- | ----------- | ---------- | --------- |
 | ms | Histogram | Int | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
+
+### otelcol_loadbalancer_backend_latency_ewma
+
+Exponentially weighted moving average latency in ms for each endpoint.
+
+| Unit | Metric Type | Value Type | Stability |
+| ---- | ----------- | ---------- | --------- |
+| ms | Gauge | Int | Development |
 
 #### Attributes
 
@@ -32,7 +88,36 @@ Number of successes and failures for each endpoint.
 
 | Name | Description | Values |
 | ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
 | success | Whether an outcome was successful | Any Bool |
+
+### otelcol_loadbalancer_backend_requests
+
+Number of export requests sent to each endpoint.
+
+| Unit | Metric Type | Value Type | Monotonic | Stability |
+| ---- | ----------- | ---------- | --------- | --------- |
+| {requests} | Sum | Int | true | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
+
+### otelcol_loadbalancer_backend_weight
+
+Current routing weight for each endpoint.
+
+| Unit | Metric Type | Value Type | Stability |
+| ---- | ----------- | ---------- | --------- |
+| {weight} | Gauge | Int | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
 
 ### otelcol_loadbalancer_num_backend_updates
 

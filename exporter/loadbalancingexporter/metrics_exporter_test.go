@@ -879,11 +879,11 @@ func TestRollingUpdatesWhenConsumeMetrics(t *testing.T) {
 			// simulate an unreachable backend
 			time.Sleep(10 * time.Second)
 			return nil
-		}), "127.0.0.1"),
+		}), "127.0.0.1", 1),
 		"127.0.0.2:4317": newWrappedExporter(newMockMetricsExporter(func(_ context.Context, _ pmetric.Metrics) error {
 			counter2.Add(1)
 			return nil
-		}), "127.0.0.2"),
+		}), "127.0.0.2", 1),
 	}
 
 	// test

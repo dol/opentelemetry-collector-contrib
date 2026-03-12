@@ -16,7 +16,6 @@ import (
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/otlpexporter"
 	"go.opentelemetry.io/collector/pdata/ptrace"
-	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 
@@ -130,16 +129,14 @@ func (e *traceExporterImp) ConsumeTraces(ctx context.Context, td ptrace.Traces) 
 	var errs error
 
 	for exp, td := range exporterSegregatedTraces {
+		exp.beginRequest(ctx, e.telemetry)
 		start := time.Now()
 		err := exp.ConsumeTraces(ctx, td)
 		exp.consumeWG.Done()
 		errs = multierr.Append(errs, err)
 		duration := time.Since(start)
-		e.telemetry.LoadbalancerBackendLatency.Record(ctx, duration.Milliseconds(), metric.WithAttributeSet(exp.endpointAttr))
-		if err == nil {
-			e.telemetry.LoadbalancerBackendOutcome.Add(ctx, 1, metric.WithAttributeSet(exp.successAttr))
-		} else {
-			e.telemetry.LoadbalancerBackendOutcome.Add(ctx, 1, metric.WithAttributeSet(exp.failureAttr))
+		exp.endRequest(ctx, e.telemetry, duration, err)
+		if err != nil {
 			e.logger.Debug("failed to export traces", zap.Error(err))
 		}
 	}

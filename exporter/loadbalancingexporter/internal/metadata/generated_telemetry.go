@@ -6,9 +6,10 @@ import (
 	"errors"
 	"sync"
 
-	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+
+	"go.opentelemetry.io/collector/component"
 )
 
 func Meter(settings component.TelemetrySettings) metric.Meter {
@@ -22,14 +23,20 @@ func Tracer(settings component.TelemetrySettings) trace.Tracer {
 // TelemetryBuilder provides an interface for components to report telemetry
 // as defined in metadata and user config.
 type TelemetryBuilder struct {
-	meter                         metric.Meter
-	mu                            sync.Mutex
-	registrations                 []metric.Registration
-	LoadbalancerBackendLatency    metric.Int64Histogram
-	LoadbalancerBackendOutcome    metric.Int64Counter
-	LoadbalancerNumBackendUpdates metric.Int64Counter
-	LoadbalancerNumBackends       metric.Int64Gauge
-	LoadbalancerNumResolutions    metric.Int64Counter
+	meter                                  metric.Meter
+	mu                                     sync.Mutex
+	registrations                          []metric.Registration
+	LoadbalancerBackendConsecutiveFailures metric.Int64Gauge
+	LoadbalancerBackendHealthy             metric.Int64Gauge
+	LoadbalancerBackendInflight            metric.Int64Gauge
+	LoadbalancerBackendLatency             metric.Int64Histogram
+	LoadbalancerBackendLatencyEwma         metric.Int64Gauge
+	LoadbalancerBackendOutcome             metric.Int64Counter
+	LoadbalancerBackendRequests            metric.Int64Counter
+	LoadbalancerBackendWeight              metric.Int64Gauge
+	LoadbalancerNumBackendUpdates          metric.Int64Counter
+	LoadbalancerNumBackends                metric.Int64Gauge
+	LoadbalancerNumResolutions             metric.Int64Counter
 }
 
 // TelemetryBuilderOption applies changes to default builder.
@@ -61,6 +68,24 @@ func NewTelemetryBuilder(settings component.TelemetrySettings, options ...Teleme
 	}
 	builder.meter = Meter(settings)
 	var err, errs error
+	builder.LoadbalancerBackendConsecutiveFailures, err = builder.meter.Int64Gauge(
+		"otelcol_loadbalancer_backend_consecutive_failures",
+		metric.WithDescription("Current number of consecutive failures for each endpoint. [Development]"),
+		metric.WithUnit("{failures}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendHealthy, err = builder.meter.Int64Gauge(
+		"otelcol_loadbalancer_backend_healthy",
+		metric.WithDescription("Health state for each endpoint represented as 1 for healthy and 0 for unhealthy. [Development]"),
+		metric.WithUnit("{state}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendInflight, err = builder.meter.Int64Gauge(
+		"otelcol_loadbalancer_backend_inflight",
+		metric.WithDescription("Current number of in-flight requests for each endpoint. [Development]"),
+		metric.WithUnit("{requests}"),
+	)
+	errs = errors.Join(errs, err)
 	builder.LoadbalancerBackendLatency, err = builder.meter.Int64Histogram(
 		"otelcol_loadbalancer_backend_latency",
 		metric.WithDescription("Response latency in ms for the backends. [Development]"),
@@ -68,10 +93,28 @@ func NewTelemetryBuilder(settings component.TelemetrySettings, options ...Teleme
 		metric.WithExplicitBucketBoundaries([]float64{5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000}...),
 	)
 	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendLatencyEwma, err = builder.meter.Int64Gauge(
+		"otelcol_loadbalancer_backend_latency_ewma",
+		metric.WithDescription("Exponentially weighted moving average latency in ms for each endpoint. [Development]"),
+		metric.WithUnit("ms"),
+	)
+	errs = errors.Join(errs, err)
 	builder.LoadbalancerBackendOutcome, err = builder.meter.Int64Counter(
 		"otelcol_loadbalancer_backend_outcome",
 		metric.WithDescription("Number of successes and failures for each endpoint. [Development]"),
 		metric.WithUnit("{outcomes}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendRequests, err = builder.meter.Int64Counter(
+		"otelcol_loadbalancer_backend_requests",
+		metric.WithDescription("Number of export requests sent to each endpoint. [Development]"),
+		metric.WithUnit("{requests}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendWeight, err = builder.meter.Int64Gauge(
+		"otelcol_loadbalancer_backend_weight",
+		metric.WithDescription("Current routing weight for each endpoint. [Development]"),
+		metric.WithUnit("{weight}"),
 	)
 	errs = errors.Join(errs, err)
 	builder.LoadbalancerNumBackendUpdates, err = builder.meter.Int64Counter(

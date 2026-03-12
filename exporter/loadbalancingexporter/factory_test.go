@@ -180,7 +180,7 @@ func TestWrappedExporterHasEndpointAttribute(t *testing.T) {
 
 	mockComponent := &struct{ component.Component }{}
 
-	wrappedExp := newWrappedExporter(mockComponent, testEndpoint)
+	wrappedExp := newWrappedExporter(mockComponent, testEndpoint, 1)
 
 	endpointValue, found := wrappedExp.endpointAttr.Value("endpoint")
 	require.True(t, found, "endpoint attribute should exist")

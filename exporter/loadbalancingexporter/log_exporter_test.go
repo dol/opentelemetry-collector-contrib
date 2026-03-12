@@ -525,11 +525,11 @@ func TestRollingUpdatesWhenConsumeLogs(t *testing.T) {
 			// simulate an unreachable backend
 			<-unreachableCh
 			return nil
-		}), id1),
+		}), id1, 1),
 		id2: newWrappedExporter(newMockLogsExporter(func(_ context.Context, _ plog.Logs) error {
 			counter2.Add(1)
 			return nil
-		}), id2),
+		}), id2, 1),
 	}
 
 	// test

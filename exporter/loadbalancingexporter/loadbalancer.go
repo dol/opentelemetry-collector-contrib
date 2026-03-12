@@ -178,7 +178,7 @@ func (lb *loadBalancer) addMissingExporters(ctx context.Context, endpoints []str
 				lb.logger.Error("failed to create new exporter for endpoint", zap.String("endpoint", endpoint), zap.Error(err))
 				continue
 			}
-			we := newWrappedExporter(exp, endpoint)
+			we := newWrappedExporter(exp, endpoint, 1)
 			if err = we.Start(ctx, lb.host); err != nil {
 				lb.logger.Error("failed to start new exporter for endpoint", zap.String("endpoint", endpoint), zap.Error(err))
 				continue

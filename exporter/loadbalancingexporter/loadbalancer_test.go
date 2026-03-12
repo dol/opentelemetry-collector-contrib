@@ -432,5 +432,5 @@ func TestNewLoadBalancerInvalidServiceAwsResolver(t *testing.T) {
 }
 
 func newNopMockExporter() *wrappedExporter {
-	return newWrappedExporter(mockComponent{}, "mock")
+	return newWrappedExporter(mockComponent{}, "mock", 1)
 }
