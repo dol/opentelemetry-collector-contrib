@@ -1,0 +1,10 @@
+change_type: enhancement
+component: exporter/loadbalancing
+note: Add configurable routing algorithms and per-backend routing telemetry to the loadbalancing exporter.
+issues: [0]
+subtext: |
+  Adds `routing.algorithm` support for `consistent_hashing`, `round_robin`, `weighted_round_robin`,
+  `least_connections`, `least_response_time`, and `power_of_two_choices`.
+  Adds structured `resolver.static.endpoints` with weights while preserving backward compatibility
+  with `resolver.static.hostnames`.
+change_logs: [user]
