@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"go.opentelemetry.io/collector/component"
 	"go.uber.org/zap"
@@ -37,6 +39,9 @@ type loadBalancer struct {
 
 	componentFactory componentFactory
 	exporters        map[string]*wrappedExporter
+	resolved         []string
+	routingAlgorithm string
+	roundRobinCount  atomic.Uint64
 
 	stopped    bool
 	updateLock sync.RWMutex
@@ -142,6 +147,7 @@ func newLoadBalancer(logger *zap.Logger, cfg component.Config, factory component
 		res:              res,
 		componentFactory: factory,
 		exporters:        map[string]*wrappedExporter{},
+		routingAlgorithm: oCfg.routingAlgorithm(),
 	}, nil
 }
 
@@ -159,6 +165,7 @@ func (lb *loadBalancer) onBackendChanges(resolved []string) {
 		defer lb.updateLock.Unlock()
 
 		lb.ring = newRing
+		lb.resolved = append(lb.resolved[:0], resolved...)
 
 		// TODO: set a timeout?
 		ctx := context.Background()
@@ -230,7 +237,7 @@ func (lb *loadBalancer) exporterAndEndpoint(identifier []byte) (*wrappedExporter
 	// for details: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/1690
 	lb.updateLock.RLock()
 	defer lb.updateLock.RUnlock()
-	endpoint := lb.ring.endpointFor(identifier)
+	endpoint := lb.routingEndpoint(identifier)
 	exp, found := lb.exporters[endpointWithPort(endpoint)]
 	if !found {
 		// something is really wrong... how come we couldn't find the exporter??
@@ -238,4 +245,46 @@ func (lb *loadBalancer) exporterAndEndpoint(identifier []byte) (*wrappedExporter
 	}
 
 	return exp, endpoint, nil
+}
+
+func (lb *loadBalancer) routingEndpoint(identifier []byte) string {
+	switch lb.routingAlgorithm {
+	case roundRobinRoutingAlgorithmStr:
+		return lb.roundRobinEndpoint()
+	default:
+		return lb.ring.endpointFor(identifier)
+	}
+}
+
+func (lb *loadBalancer) roundRobinEndpoint() string {
+	endpoints := lb.availableEndpoints(true)
+	if len(endpoints) == 0 {
+		endpoints = lb.availableEndpoints(false)
+	}
+	if len(endpoints) == 0 {
+		return ""
+	}
+	idx := int(lb.roundRobinCount.Add(1)-1) % len(endpoints)
+	return endpoints[idx]
+}
+
+func (lb *loadBalancer) availableEndpoints(healthyOnly bool) []string {
+	if len(lb.resolved) == 0 {
+		return nil
+	}
+
+	endpoints := make([]string, 0, len(lb.resolved))
+	for _, endpoint := range lb.resolved {
+		exp, found := lb.exporters[endpointWithPort(endpoint)]
+		if !found {
+			continue
+		}
+		if healthyOnly && !exp.stats().healthy {
+			continue
+		}
+		endpoints = append(endpoints, endpoint)
+	}
+
+	sort.Strings(endpoints)
+	return endpoints
 }
