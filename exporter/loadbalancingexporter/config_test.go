@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter/internal/metadata"
@@ -25,6 +26,25 @@ func TestLoadConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, sub.Unmarshal(cfg))
 	require.NotNil(t, cfg)
+}
+
+func TestLoadConfigWithRoutingAlgorithmAndStructuredStaticEndpoints(t *testing.T) {
+	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "config.yaml"))
+	require.NoError(t, err)
+
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig()
+
+	sub, err := cm.Sub(component.NewIDWithName(metadata.Type, "6").String())
+	require.NoError(t, err)
+	require.NoError(t, sub.Unmarshal(cfg))
+
+	lbCfg := cfg.(*Config)
+	require.Equal(t, leastConnectionsRoutingAlgorithmStr, lbCfg.Routing.Algorithm)
+	require.Equal(t, []StaticEndpoint{
+		{Endpoint: "endpoint-1", Weight: 2},
+		{Endpoint: "endpoint-2:55678", Weight: 1},
+	}, lbCfg.Resolver.Static.Get().Endpoints)
 }
 
 func TestConfigValidate(t *testing.T) {
@@ -71,6 +91,66 @@ func TestConfigValidate(t *testing.T) {
 				"",
 				attrRoutingStr,
 			),
+		},
+		{
+			name: "routing algorithm defaults to consistent hashing",
+			cfg: Config{
+				Resolver: ResolverSettings{
+					Static: configoptional.Some(StaticResolver{Hostnames: []string{"backend-1:4317"}}),
+				},
+			},
+		},
+		{
+			name: "weighted round robin requires structured static endpoints",
+			cfg: Config{
+				Resolver: ResolverSettings{
+					Static: configoptional.Some(StaticResolver{Hostnames: []string{"backend-1:4317"}}),
+				},
+				Routing: RoutingSettings{
+					Algorithm: weightedRoundRobinRoutingAlgorithmStr,
+				},
+			},
+			expectedErr: "routing.algorithm \"weighted_round_robin\" requires resolver.static.endpoints with weights",
+		},
+		{
+			name: "weighted round robin with structured static endpoints is valid",
+			cfg: Config{
+				Resolver: ResolverSettings{
+					Static: configoptional.Some(StaticResolver{
+						Endpoints: []StaticEndpoint{
+							{Endpoint: "backend-1:4317", Weight: 2},
+							{Endpoint: "backend-2:4317", Weight: 1},
+						},
+					}),
+				},
+				Routing: RoutingSettings{
+					Algorithm: weightedRoundRobinRoutingAlgorithmStr,
+				},
+			},
+		},
+		{
+			name: "static resolver rejects mixed hostnames and endpoints",
+			cfg: Config{
+				Resolver: ResolverSettings{
+					Static: configoptional.Some(StaticResolver{
+						Hostnames: []string{"backend-1:4317"},
+						Endpoints: []StaticEndpoint{{Endpoint: "backend-2:4317", Weight: 1}},
+					}),
+				},
+			},
+			expectedErr: "resolver.static.hostnames and resolver.static.endpoints are mutually exclusive",
+		},
+		{
+			name: "unknown routing algorithm is invalid",
+			cfg: Config{
+				Resolver: ResolverSettings{
+					Static: configoptional.Some(StaticResolver{Hostnames: []string{"backend-1:4317"}}),
+				},
+				Routing: RoutingSettings{
+					Algorithm: "does_not_exist",
+				},
+			},
+			expectedErr: "unsupported routing.algorithm: \"does_not_exist\"",
 		},
 	}
 

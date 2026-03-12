@@ -66,8 +66,9 @@ func newLoadBalancer(logger *zap.Logger, cfg component.Config, factory component
 	var res resolver
 	if oCfg.Resolver.Static.HasValue() {
 		var err error
+		staticResolver := oCfg.Resolver.Static.Get()
 		res, err = newStaticResolver(
-			oCfg.Resolver.Static.Get().Hostnames,
+			staticResolver.BackendEndpoints(),
 			telemetry,
 		)
 		if err != nil {

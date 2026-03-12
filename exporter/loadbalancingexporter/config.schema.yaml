@@ -48,12 +48,54 @@ $defs:
       timeout:
         type: string
         format: duration
+  least_response_time_latency:
+    type: object
+    properties:
+      aggregation:
+        type: string
+      alpha:
+        type: number
+  least_response_time_routing:
+    type: object
+    properties:
+      latency:
+        $ref: least_response_time_latency
+  power_of_two_choices_routing:
+    type: object
+    properties:
+      fallback:
+        type: string
+      score:
+        type: string
   protocol:
     description: Protocol holds the individual protocol-specific settings. Only OTLP is supported at the moment.
     type: object
     properties:
       otlp:
         $ref: go.opentelemetry.io/collector/exporter/otlpexporter.config
+  routing_settings:
+    type: object
+    properties:
+      algorithm:
+        type: string
+      consistent_hashing:
+        x-optional: true
+        type: object
+      least_connections:
+        x-optional: true
+        type: object
+      least_response_time:
+        x-optional: true
+        $ref: least_response_time_routing
+      power_of_two_choices:
+        x-optional: true
+        $ref: power_of_two_choices_routing
+      round_robin:
+        x-optional: true
+        type: object
+      weighted_round_robin:
+        x-optional: true
+        type: object
   resolver_settings:
     description: ResolverSettings defines the configurations for the backend resolver
     type: object
@@ -74,10 +116,21 @@ $defs:
     description: StaticResolver defines the configuration for the resolver providing a fixed list of backends
     type: object
     properties:
+      endpoints:
+        type: array
+        items:
+          $ref: static_endpoint
       hostnames:
         type: array
         items:
           type: string
+  static_endpoint:
+    type: object
+    properties:
+      endpoint:
+        type: string
+      weight:
+        type: integer
 description: Config defines configuration for the exporter.
 type: object
 properties:
@@ -85,6 +138,8 @@ properties:
     $ref: protocol
   resolver:
     $ref: resolver_settings
+  routing:
+    $ref: routing_settings
   routing_attributes:
     description: RoutingAttributes creates a composite routing key from the listed attributes. For traces, attributes can come from resource, scope, or span, plus the pseudo attributes "span.kind" and "span.name". For metrics, attributes can come from resource, scope, or datapoint attributes.
     type: array

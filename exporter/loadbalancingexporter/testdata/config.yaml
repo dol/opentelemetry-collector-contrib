@@ -47,3 +47,16 @@ loadbalancing/5:
     otlp:
       sending_queue:
         enabled: false
+loadbalancing/6:
+  protocol:
+    otlp:
+      timeout: 1s
+  routing:
+    algorithm: least_connections
+  resolver:
+    static:
+      endpoints:
+      - endpoint: endpoint-1
+        weight: 2
+      - endpoint: endpoint-2:55678
+        weight: 1
