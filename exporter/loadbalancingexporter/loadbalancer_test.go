@@ -449,6 +449,70 @@ func TestRoundRobinSkipsUnhealthyEndpoints(t *testing.T) {
 	assert.Equal(t, "endpoint-2", endpoint)
 }
 
+func TestWeightedRoundRobinExporterSelection(t *testing.T) {
+	ts, tb := getTelemetryAssets(t)
+	cfg := &Config{
+		Resolver: ResolverSettings{
+			Static: configoptional.Some(StaticResolver{
+				Endpoints: []StaticEndpoint{
+					{Endpoint: "endpoint-1", Weight: 2},
+					{Endpoint: "endpoint-2", Weight: 1},
+				},
+			}),
+		},
+		Routing: RoutingSettings{
+			Algorithm: weightedRoundRobinRoutingAlgorithmStr,
+		},
+	}
+	componentFactory := func(_ context.Context, _ string) (component.Component, error) {
+		return newNopMockExporter(), nil
+	}
+
+	p, err := newLoadBalancer(ts.Logger, cfg, componentFactory, tb)
+	require.NoError(t, err)
+	require.NoError(t, p.Start(t.Context(), componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, p.Shutdown(t.Context()))
+	})
+
+	expected := []string{"endpoint-1", "endpoint-1", "endpoint-2", "endpoint-1", "endpoint-1", "endpoint-2"}
+	for i, identifier := range [][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("d"), []byte("e"), []byte("f")} {
+		_, endpoint, err := p.exporterAndEndpoint(identifier)
+		require.NoError(t, err)
+		assert.Equal(t, expected[i], endpoint)
+	}
+}
+
+func TestWeightedRoundRobinUsesConfiguredStaticWeights(t *testing.T) {
+	ts, tb := getTelemetryAssets(t)
+	cfg := &Config{
+		Resolver: ResolverSettings{
+			Static: configoptional.Some(StaticResolver{
+				Endpoints: []StaticEndpoint{
+					{Endpoint: "endpoint-1", Weight: 3},
+					{Endpoint: "endpoint-2", Weight: 1},
+				},
+			}),
+		},
+		Routing: RoutingSettings{
+			Algorithm: weightedRoundRobinRoutingAlgorithmStr,
+		},
+	}
+	componentFactory := func(_ context.Context, _ string) (component.Component, error) {
+		return newNopMockExporter(), nil
+	}
+
+	p, err := newLoadBalancer(ts.Logger, cfg, componentFactory, tb)
+	require.NoError(t, err)
+	require.NoError(t, p.Start(t.Context(), componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, p.Shutdown(t.Context()))
+	})
+
+	assert.Equal(t, int64(3), p.exporters["endpoint-1:4317"].stats().weight)
+	assert.Equal(t, int64(1), p.exporters["endpoint-2:4317"].stats().weight)
+}
+
 func TestNewLoadBalancerInvalidNamespaceAwsResolver(t *testing.T) {
 	// prepare
 	ts, tb := getTelemetryAssets(t)

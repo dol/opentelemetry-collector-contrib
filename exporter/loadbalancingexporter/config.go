@@ -187,6 +187,14 @@ func (r StaticResolver) BackendEndpoints() []string {
 	return r.Hostnames
 }
 
+func (r StaticResolver) EndpointWeights() map[string]int64 {
+	weights := make(map[string]int64, len(r.Endpoints))
+	for _, endpoint := range r.Endpoints {
+		weights[endpoint.Endpoint] = endpoint.Weight
+	}
+	return weights
+}
+
 // DNSResolver defines the configuration for the DNS resolver
 type DNSResolver struct {
 	Hostname string        `mapstructure:"hostname"`

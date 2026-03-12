@@ -42,6 +42,7 @@ type loadBalancer struct {
 	resolved         []string
 	routingAlgorithm string
 	roundRobinCount  atomic.Uint64
+	endpointWeights  map[string]int64
 
 	stopped    bool
 	updateLock sync.RWMutex
@@ -147,6 +148,7 @@ func newLoadBalancer(logger *zap.Logger, cfg component.Config, factory component
 		res:              res,
 		componentFactory: factory,
 		exporters:        map[string]*wrappedExporter{},
+		endpointWeights:  staticEndpointWeights(oCfg),
 		routingAlgorithm: oCfg.routingAlgorithm(),
 	}, nil
 }
@@ -186,7 +188,7 @@ func (lb *loadBalancer) addMissingExporters(ctx context.Context, endpoints []str
 				lb.logger.Error("failed to create new exporter for endpoint", zap.String("endpoint", endpoint), zap.Error(err))
 				continue
 			}
-			we := newWrappedExporter(exp, endpoint, 1)
+			we := newWrappedExporter(exp, endpoint, lb.endpointWeight(endpoint))
 			if err = we.Start(ctx, lb.host); err != nil {
 				lb.logger.Error("failed to start new exporter for endpoint", zap.String("endpoint", endpoint), zap.Error(err))
 				continue
@@ -251,6 +253,8 @@ func (lb *loadBalancer) routingEndpoint(identifier []byte) string {
 	switch lb.routingAlgorithm {
 	case roundRobinRoutingAlgorithmStr:
 		return lb.roundRobinEndpoint()
+	case weightedRoundRobinRoutingAlgorithmStr:
+		return lb.weightedRoundRobinEndpoint()
 	default:
 		return lb.ring.endpointFor(identifier)
 	}
@@ -266,6 +270,37 @@ func (lb *loadBalancer) roundRobinEndpoint() string {
 	}
 	idx := int(lb.roundRobinCount.Add(1)-1) % len(endpoints)
 	return endpoints[idx]
+}
+
+func (lb *loadBalancer) weightedRoundRobinEndpoint() string {
+	endpoints := lb.availableEndpoints(true)
+	if len(endpoints) == 0 {
+		endpoints = lb.availableEndpoints(false)
+	}
+	if len(endpoints) == 0 {
+		return ""
+	}
+
+	totalWeight := 0
+	weights := make([]int, len(endpoints))
+	for i, endpoint := range endpoints {
+		weight := int(lb.endpointWeight(endpoint))
+		if weight <= 0 {
+			weight = 1
+		}
+		weights[i] = weight
+		totalWeight += weight
+	}
+
+	idx := int(lb.roundRobinCount.Add(1)-1) % totalWeight
+	for i, endpoint := range endpoints {
+		if idx < weights[i] {
+			return endpoint
+		}
+		idx -= weights[i]
+	}
+
+	return endpoints[0]
 }
 
 func (lb *loadBalancer) availableEndpoints(healthyOnly bool) []string {
@@ -287,4 +322,28 @@ func (lb *loadBalancer) availableEndpoints(healthyOnly bool) []string {
 
 	sort.Strings(endpoints)
 	return endpoints
+}
+
+func (lb *loadBalancer) endpointWeight(endpoint string) int64 {
+	if exp, found := lb.exporters[endpointWithPort(endpoint)]; found {
+		return exp.stats().weight
+	}
+	if weight, found := lb.endpointWeights[endpoint]; found {
+		return weight
+	}
+	if weight, found := lb.endpointWeights[endpointWithPort(endpoint)]; found {
+		return weight
+	}
+	return 1
+}
+
+func staticEndpointWeights(cfg *Config) map[string]int64 {
+	if !cfg.Resolver.Static.HasValue() {
+		return nil
+	}
+	weights := cfg.Resolver.Static.Get().EndpointWeights()
+	for endpoint, weight := range cfg.Resolver.Static.Get().EndpointWeights() {
+		weights[endpointWithPort(endpoint)] = weight
+	}
+	return weights
 }
