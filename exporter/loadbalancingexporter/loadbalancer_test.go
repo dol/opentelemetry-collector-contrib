@@ -513,6 +513,67 @@ func TestWeightedRoundRobinUsesConfiguredStaticWeights(t *testing.T) {
 	assert.Equal(t, int64(1), p.exporters["endpoint-2:4317"].stats().weight)
 }
 
+func TestLeastConnectionsExporterSelection(t *testing.T) {
+	ts, tb := getTelemetryAssets(t)
+	cfg := &Config{
+		Resolver: ResolverSettings{
+			Static: configoptional.Some(StaticResolver{Hostnames: []string{"endpoint-1", "endpoint-2", "endpoint-3"}}),
+		},
+		Routing: RoutingSettings{
+			Algorithm: leastConnectionsRoutingAlgorithmStr,
+		},
+	}
+	componentFactory := func(_ context.Context, _ string) (component.Component, error) {
+		return newNopMockExporter(), nil
+	}
+
+	p, err := newLoadBalancer(ts.Logger, cfg, componentFactory, tb)
+	require.NoError(t, err)
+	require.NoError(t, p.Start(t.Context(), componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, p.Shutdown(t.Context()))
+	})
+
+	p.exporters["endpoint-1:4317"].inflightRequests = 4
+	p.exporters["endpoint-2:4317"].inflightRequests = 1
+	p.exporters["endpoint-3:4317"].inflightRequests = 2
+
+	_, endpoint, err := p.exporterAndEndpoint([]byte("identifier"))
+	require.NoError(t, err)
+	assert.Equal(t, "endpoint-2", endpoint)
+}
+
+func TestLeastConnectionsFallsBackToHealthyOrderingOnTie(t *testing.T) {
+	ts, tb := getTelemetryAssets(t)
+	cfg := &Config{
+		Resolver: ResolverSettings{
+			Static: configoptional.Some(StaticResolver{Hostnames: []string{"endpoint-2", "endpoint-1"}}),
+		},
+		Routing: RoutingSettings{
+			Algorithm: leastConnectionsRoutingAlgorithmStr,
+		},
+	}
+	componentFactory := func(_ context.Context, _ string) (component.Component, error) {
+		return newNopMockExporter(), nil
+	}
+
+	p, err := newLoadBalancer(ts.Logger, cfg, componentFactory, tb)
+	require.NoError(t, err)
+	require.NoError(t, p.Start(t.Context(), componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, p.Shutdown(t.Context()))
+	})
+
+	p.exporters["endpoint-1:4317"].inflightRequests = 1
+	p.exporters["endpoint-2:4317"].inflightRequests = 1
+	p.exporters["endpoint-1:4317"].healthy = true
+	p.exporters["endpoint-2:4317"].healthy = true
+
+	_, endpoint, err := p.exporterAndEndpoint([]byte("identifier"))
+	require.NoError(t, err)
+	assert.Equal(t, "endpoint-1", endpoint)
+}
+
 func TestNewLoadBalancerInvalidNamespaceAwsResolver(t *testing.T) {
 	// prepare
 	ts, tb := getTelemetryAssets(t)

@@ -255,6 +255,8 @@ func (lb *loadBalancer) routingEndpoint(identifier []byte) string {
 		return lb.roundRobinEndpoint()
 	case weightedRoundRobinRoutingAlgorithmStr:
 		return lb.weightedRoundRobinEndpoint()
+	case leastConnectionsRoutingAlgorithmStr:
+		return lb.leastConnectionsEndpoint()
 	default:
 		return lb.ring.endpointFor(identifier)
 	}
@@ -322,6 +324,28 @@ func (lb *loadBalancer) availableEndpoints(healthyOnly bool) []string {
 
 	sort.Strings(endpoints)
 	return endpoints
+}
+
+func (lb *loadBalancer) leastConnectionsEndpoint() string {
+	endpoints := lb.availableEndpoints(true)
+	if len(endpoints) == 0 {
+		endpoints = lb.availableEndpoints(false)
+	}
+	if len(endpoints) == 0 {
+		return ""
+	}
+
+	selected := endpoints[0]
+	minInflight := lb.exporters[endpointWithPort(selected)].stats().inflightRequests
+	for _, endpoint := range endpoints[1:] {
+		inflight := lb.exporters[endpointWithPort(endpoint)].stats().inflightRequests
+		if inflight < minInflight {
+			selected = endpoint
+			minInflight = inflight
+		}
+	}
+
+	return selected
 }
 
 func (lb *loadBalancer) endpointWeight(endpoint string) int64 {
