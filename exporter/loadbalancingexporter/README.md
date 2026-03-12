@@ -122,8 +122,13 @@ Refer to [config.yaml](./testdata/config.yaml) for detailed examples on using th
   * `traceID`: Routes spans based on their `traceID`. Invalid for metrics.
   * `metric`: Routes metrics based on their metric name. Invalid for spans.
   * `streamID`: Routes metrics based on their datapoint streamID. That's the unique hash of all it's attributes, plus the attributes and identifying information of its resource, scope, and metric data
+* The `routing.algorithm` property controls how a backend is chosen once a routing key has been derived. Supported values are `consistent_hashing` (default), `round_robin`, `weighted_round_robin`, `least_connections`, `least_response_time`, and `power_of_two_choices`.
+  * `weighted_round_robin` currently supports weights only with `resolver.static.endpoints`.
+  * `least_response_time` uses the exporter internal EWMA latency signal.
+  * `power_of_two_choices` compares the current number of in-flight requests.
 * loadbalancing exporter supports set of standard [queuing, retry and timeout settings](https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md), but they are disable by default to maintain compatibility
 * The `routing_attributes` property is used to list the attributes that should be used if the `routing_key` is `attributes`.
+* The `resolver.static.endpoints` property is the structured form of the static resolver and allows specifying endpoint weights. `resolver.static.hostnames` remains supported for backward compatibility, but `hostnames` and `endpoints` are mutually exclusive.
 
 Simple example
 
@@ -139,6 +144,8 @@ processors:
 exporters:
   loadbalancing:
     routing_key: "service"
+    routing:
+      algorithm: "least_connections"
     protocol:
       otlp:
         # all options from the OTLP exporter are supported
@@ -442,3 +449,9 @@ The following metrics are recorded by this exporter:
 * `otelcol_loadbalancer_num_backend_updates` records how many of the resolutions resulted in a new list of backends. Use this information to understand how frequent your backend updates are and how often the ring is rebalanced. If the DNS hostname is always returning the same list of IP addresses but this metric keeps increasing, it might indicate a bug in the load balancer.
 * `otelcol_loadbalancer_backend_latency` measures the latency for each backend.
 * `otelcol_loadbalancer_backend_outcome` counts what the outcomes were for each endpoint, `success=true|false`.
+* `otelcol_loadbalancer_backend_inflight` records the current number of in-flight export requests for each endpoint.
+* `otelcol_loadbalancer_backend_requests` records the total number of export requests sent to each endpoint.
+* `otelcol_loadbalancer_backend_latency_ewma` records the exponentially weighted moving average latency for each endpoint.
+* `otelcol_loadbalancer_backend_consecutive_failures` records the current consecutive failure count for each endpoint.
+* `otelcol_loadbalancer_backend_healthy` records whether an endpoint is currently healthy (`1`) or unhealthy (`0`).
+* `otelcol_loadbalancer_backend_weight` records the current routing weight for each endpoint.
