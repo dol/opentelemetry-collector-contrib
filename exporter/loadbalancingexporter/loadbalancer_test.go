@@ -574,6 +574,68 @@ func TestLeastConnectionsFallsBackToHealthyOrderingOnTie(t *testing.T) {
 	assert.Equal(t, "endpoint-1", endpoint)
 }
 
+func TestLeastResponseTimeExporterSelection(t *testing.T) {
+	ts, tb := getTelemetryAssets(t)
+	cfg := &Config{
+		Resolver: ResolverSettings{
+			Static: configoptional.Some(StaticResolver{Hostnames: []string{"endpoint-1", "endpoint-2", "endpoint-3"}}),
+		},
+		Routing: RoutingSettings{
+			Algorithm: leastResponseTimeRoutingAlgorithmStr,
+		},
+	}
+	componentFactory := func(_ context.Context, _ string) (component.Component, error) {
+		return newNopMockExporter(), nil
+	}
+
+	p, err := newLoadBalancer(ts.Logger, cfg, componentFactory, tb)
+	require.NoError(t, err)
+	require.NoError(t, p.Start(t.Context(), componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, p.Shutdown(t.Context()))
+	})
+
+	p.exporters["endpoint-1:4317"].latencyEWMA = 90
+	p.exporters["endpoint-1:4317"].latencyInitialized = true
+	p.exporters["endpoint-2:4317"].latencyEWMA = 40
+	p.exporters["endpoint-2:4317"].latencyInitialized = true
+	p.exporters["endpoint-3:4317"].latencyEWMA = 70
+	p.exporters["endpoint-3:4317"].latencyInitialized = true
+
+	_, endpoint, err := p.exporterAndEndpoint([]byte("identifier"))
+	require.NoError(t, err)
+	assert.Equal(t, "endpoint-2", endpoint)
+}
+
+func TestLeastResponseTimePrefersObservedLatencyOverUninitializedEndpoints(t *testing.T) {
+	ts, tb := getTelemetryAssets(t)
+	cfg := &Config{
+		Resolver: ResolverSettings{
+			Static: configoptional.Some(StaticResolver{Hostnames: []string{"endpoint-1", "endpoint-2"}}),
+		},
+		Routing: RoutingSettings{
+			Algorithm: leastResponseTimeRoutingAlgorithmStr,
+		},
+	}
+	componentFactory := func(_ context.Context, _ string) (component.Component, error) {
+		return newNopMockExporter(), nil
+	}
+
+	p, err := newLoadBalancer(ts.Logger, cfg, componentFactory, tb)
+	require.NoError(t, err)
+	require.NoError(t, p.Start(t.Context(), componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, p.Shutdown(t.Context()))
+	})
+
+	p.exporters["endpoint-1:4317"].latencyEWMA = 15
+	p.exporters["endpoint-1:4317"].latencyInitialized = true
+
+	_, endpoint, err := p.exporterAndEndpoint([]byte("identifier"))
+	require.NoError(t, err)
+	assert.Equal(t, "endpoint-1", endpoint)
+}
+
 func TestNewLoadBalancerInvalidNamespaceAwsResolver(t *testing.T) {
 	// prepare
 	ts, tb := getTelemetryAssets(t)
