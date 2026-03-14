@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/pipeline"
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/processorhelper"
+	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 
@@ -42,7 +43,7 @@ func newFilterMetricProcessor(set processor.Settings, cfg *Config) (*filterMetri
 		logger: set.Logger,
 	}
 
-	fpt, err := newFilterTelemetry(set, pipeline.SignalMetrics)
+	fpt, err := newFilterTelemetry(set, pipeline.SignalMetrics, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("error creating filter processor telemetry: %w", err)
 	}
@@ -168,6 +169,27 @@ func (fmp *filterMetricProcessor) processMetrics(ctx context.Context, md pmetric
 }
 
 func (fmp *filterMetricProcessor) processConditions(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
+	// Snapshot per-group datapoint counts before processing for group telemetry.
+	type groupBefore struct {
+		count   int64
+		attrSet attribute.Set
+	}
+	var before map[string]groupBefore
+	if fmp.telemetry.droppedGroup != nil {
+		before = make(map[string]groupBefore)
+		md.ResourceMetrics().Range(func(_ int, rm pmetric.ResourceMetrics) bool {
+			key, otelAttrs := buildGroupKeyAndAttrs(rm.Resource().Attributes(), fmp.telemetry.droppedGroup.attributeKeys)
+			n := countScopeMetricDataPoints(rm.ScopeMetrics())
+			if gs, ok := before[key]; ok {
+				gs.count += n
+				before[key] = gs
+			} else {
+				before[key] = groupBefore{count: n, attrSet: attribute.NewSet(otelAttrs...)}
+			}
+			return true
+		})
+	}
+
 	var errs error
 	for _, consumer := range fmp.consumers {
 		err := consumer.ConsumeMetrics(ctx, md)
@@ -175,6 +197,21 @@ func (fmp *filterMetricProcessor) processConditions(ctx context.Context, md pmet
 			errs = multierr.Append(errs, err)
 		}
 	}
+
+	if fmp.telemetry.droppedGroup != nil && len(before) > 0 {
+		after := make(map[string]int64)
+		md.ResourceMetrics().Range(func(_ int, rm pmetric.ResourceMetrics) bool {
+			key, _ := buildGroupKeyAndAttrs(rm.Resource().Attributes(), fmp.telemetry.droppedGroup.attributeKeys)
+			after[key] += countScopeMetricDataPoints(rm.ScopeMetrics())
+			return true
+		})
+		for key, gs := range before {
+			if dropped := gs.count - after[key]; dropped > 0 {
+				fmp.telemetry.droppedGroup.recordWithSet(key, gs.attrSet, dropped)
+			}
+		}
+	}
+
 	return md, errs
 }
 
@@ -190,6 +227,7 @@ func (fmp *filterMetricProcessor) processSkipExpression(ctx context.Context, md 
 				return false
 			}
 			if skip {
+				fmp.telemetry.recordGroup(rm.Resource().Attributes(), countScopeMetricDataPoints(rm.ScopeMetrics()))
 				return true
 			}
 		}
@@ -207,6 +245,7 @@ func (fmp *filterMetricProcessor) processSkipExpression(ctx context.Context, md 
 						return false
 					}
 					if skip {
+						fmp.telemetry.recordGroup(rm.Resource().Attributes(), countMetricDataPoints(metric))
 						return true
 					}
 				}
@@ -239,6 +278,34 @@ func (fmp *filterMetricProcessor) processSkipExpression(ctx context.Context, md 
 		return rm.ScopeMetrics().Len() == 0
 	})
 	return md, errs
+}
+
+// countScopeMetricDataPoints sums the data-point count across all scope metrics.
+func countScopeMetricDataPoints(sms pmetric.ScopeMetricsSlice) int64 {
+	n := int64(0)
+	for i := 0; i < sms.Len(); i++ {
+		for j := 0; j < sms.At(i).Metrics().Len(); j++ {
+			n += countMetricDataPoints(sms.At(i).Metrics().At(j))
+		}
+	}
+	return n
+}
+
+// countMetricDataPoints returns the number of data points in any metric type.
+func countMetricDataPoints(m pmetric.Metric) int64 {
+	switch m.Type() {
+	case pmetric.MetricTypeSum:
+		return int64(m.Sum().DataPoints().Len())
+	case pmetric.MetricTypeGauge:
+		return int64(m.Gauge().DataPoints().Len())
+	case pmetric.MetricTypeHistogram:
+		return int64(m.Histogram().DataPoints().Len())
+	case pmetric.MetricTypeExponentialHistogram:
+		return int64(m.ExponentialHistogram().DataPoints().Len())
+	case pmetric.MetricTypeSummary:
+		return int64(m.Summary().DataPoints().Len())
+	}
+	return 0
 }
 
 func newSkipResExpr(include, exclude *filterconfig.MetricMatchProperties) (expr.BoolExpr[*ottlresource.TransformContext], error) {
@@ -322,6 +389,9 @@ func (fmp *filterMetricProcessor) handleNumberDataPoints(ctx context.Context, rm
 			errs = multierr.Append(errs, err)
 			return false
 		}
+		if skip {
+			fmp.telemetry.recordGroup(rm.Resource().Attributes(), 1)
+		}
 		return skip
 	})
 	return errs
@@ -336,6 +406,9 @@ func (fmp *filterMetricProcessor) handleHistogramDataPoints(ctx context.Context,
 		if err != nil {
 			errs = multierr.Append(errs, err)
 			return false
+		}
+		if skip {
+			fmp.telemetry.recordGroup(rm.Resource().Attributes(), 1)
 		}
 		return skip
 	})
@@ -352,6 +425,9 @@ func (fmp *filterMetricProcessor) handleExponentialHistogramDataPoints(ctx conte
 			errs = multierr.Append(errs, err)
 			return false
 		}
+		if skip {
+			fmp.telemetry.recordGroup(rm.Resource().Attributes(), 1)
+		}
 		return skip
 	})
 	return errs
@@ -366,6 +442,9 @@ func (fmp *filterMetricProcessor) handleSummaryDataPoints(ctx context.Context, r
 		if err != nil {
 			errs = multierr.Append(errs, err)
 			return false
+		}
+		if skip {
+			fmp.telemetry.recordGroup(rm.Resource().Attributes(), 1)
 		}
 		return skip
 	})

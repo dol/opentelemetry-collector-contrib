@@ -35,7 +35,7 @@ func newFilterProfilesProcessor(set processor.Settings, cfg *Config) (*filterPro
 		logger: set.Logger,
 	}
 
-	fpt, err := newFilterTelemetry(set, xpipeline.SignalProfiles)
+	fpt, err := newFilterTelemetry(set, xpipeline.SignalProfiles, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("error creating filter processor telemetry: %w", err)
 	}

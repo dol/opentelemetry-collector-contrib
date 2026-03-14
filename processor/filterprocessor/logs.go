@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/pipeline"
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/processorhelper"
+	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 
@@ -37,7 +38,7 @@ func newFilterLogsProcessor(set processor.Settings, cfg *Config) (*filterLogProc
 		logger: set.Logger,
 	}
 
-	fpt, err := newFilterTelemetry(set, pipeline.SignalLogs)
+	fpt, err := newFilterTelemetry(set, pipeline.SignalLogs, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("error creating filter processor telemetry: %w", err)
 	}
@@ -123,6 +124,53 @@ func (flp *filterLogProcessor) processLogs(ctx context.Context, ld plog.Logs) (p
 	return processedLogs, nil
 }
 
+func (flp *filterLogProcessor) processConditions(ctx context.Context, ld plog.Logs) (plog.Logs, error) {
+	// Snapshot per-group log-record counts before processing for group telemetry.
+	type groupBefore struct {
+		count   int64
+		attrSet attribute.Set
+	}
+	var before map[string]groupBefore
+	if flp.telemetry.droppedGroup != nil {
+		before = make(map[string]groupBefore)
+		ld.ResourceLogs().Range(func(_ int, rl plog.ResourceLogs) bool {
+			key, otelAttrs := buildGroupKeyAndAttrs(rl.Resource().Attributes(), flp.telemetry.droppedGroup.attributeKeys)
+			n := countScopeLogs(rl.ScopeLogs())
+			if gs, ok := before[key]; ok {
+				gs.count += n
+				before[key] = gs
+			} else {
+				before[key] = groupBefore{count: n, attrSet: attribute.NewSet(otelAttrs...)}
+			}
+			return true
+		})
+	}
+
+	var errs error
+	for _, consumer := range flp.consumers {
+		err := consumer.ConsumeLogs(ctx, ld)
+		if err != nil {
+			errs = multierr.Append(errs, err)
+		}
+	}
+
+	if flp.telemetry.droppedGroup != nil && len(before) > 0 {
+		after := make(map[string]int64)
+		ld.ResourceLogs().Range(func(_ int, rl plog.ResourceLogs) bool {
+			key, _ := buildGroupKeyAndAttrs(rl.Resource().Attributes(), flp.telemetry.droppedGroup.attributeKeys)
+			after[key] += countScopeLogs(rl.ScopeLogs())
+			return true
+		})
+		for key, gs := range before {
+			if dropped := gs.count - after[key]; dropped > 0 {
+				flp.telemetry.droppedGroup.recordWithSet(key, gs.attrSet, dropped)
+			}
+		}
+	}
+
+	return ld, errs
+}
+
 func (flp *filterLogProcessor) processSkipExpression(ctx context.Context, ld plog.Logs) (plog.Logs, error) {
 	var errs error
 	ld.ResourceLogs().RemoveIf(func(rl plog.ResourceLogs) bool {
@@ -135,6 +183,7 @@ func (flp *filterLogProcessor) processSkipExpression(ctx context.Context, ld plo
 				return false
 			}
 			if skip {
+				flp.telemetry.recordGroup(rl.Resource().Attributes(), countScopeLogs(rl.ScopeLogs()))
 				return true
 			}
 		}
@@ -151,6 +200,9 @@ func (flp *filterLogProcessor) processSkipExpression(ctx context.Context, ld plo
 					errs = multierr.Append(errs, err)
 					return false
 				}
+				if skip {
+					flp.telemetry.recordGroup(rl.Resource().Attributes(), 1)
+				}
 				return skip
 			})
 
@@ -161,13 +213,11 @@ func (flp *filterLogProcessor) processSkipExpression(ctx context.Context, ld plo
 	return ld, errs
 }
 
-func (flp *filterLogProcessor) processConditions(ctx context.Context, ld plog.Logs) (plog.Logs, error) {
-	var errs error
-	for _, consumer := range flp.consumers {
-		err := consumer.ConsumeLogs(ctx, ld)
-		if err != nil {
-			errs = multierr.Append(errs, err)
-		}
+// countScopeLogs sums the log-record count across all scope logs.
+func countScopeLogs(sls plog.ScopeLogsSlice) int64 {
+	n := int64(0)
+	for i := 0; i < sls.Len(); i++ {
+		n += int64(sls.At(i).LogRecords().Len())
 	}
-	return ld, errs
+	return n
 }

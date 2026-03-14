@@ -315,6 +315,26 @@ processors:
       - (span.end_time - span.start_time) < Duration("1s") and span.status.code != STATUS_CODE_ERROR
 ```
 
+#### Identifying which services are violating a service.name allowlist
+
+Combine an allowlist filter with `dropped_group_by` to count dropped items per origin:
+
+```yaml
+processors:
+  filter/allowlist:
+    error_mode: ignore
+    trace_conditions:
+      - not(resource.attributes["service.name"] in ["checkout", "payments", "frontend"])
+    dropped_group_by:
+      attributes: [service.name]
+      reset_on_collect: true
+```
+
+This emits an `otelcol_filter_dropped_by_group` metric with a `service.name` label for every
+unknown service that sends data, without letting any of that data downstream.
+See [Dropped Group-By Telemetry](#dropped-group-by-telemetry) for the full reference and a
+complete pipeline example.
+
 ### OTTL Functions
 
 The filter processor has access to all [OTTL Converter functions](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/pkg/ottl/ottlfuncs#converters)
@@ -364,6 +384,145 @@ filter/keep_good_metrics:
     metric:
       - HasAttrOnDatapoint("bad.metric", "true")
 ```
+
+## Dropped Group-By Telemetry
+
+> [!NOTE]
+> This feature is in **development** status.
+
+When you use the Filter Processor as an allowlist (e.g. only permitted `service.name` values pass
+through), you may want to know _which_ origins are being rejected and _how many_ items each rejected
+origin is producing. The `dropped_group_by` block enables this by exporting a per-group drop counter
+as an observable OTLP metric.
+
+### How it works
+
+For every item that the filter drops, the processor reads the configured resource attribute keys from
+that item's resource, forms a tuple key, and increments an in-memory counter for that group.  A
+registered metric callback exposes all tracked groups as data points on a single
+`Int64ObservableUpDownCounter` metric (default name `otelcol_filter_dropped_by_group`).
+
+Each data point carries the configured attribute keys as metric labels, for example:
+
+```
+otelcol_filter_dropped_by_group{service_name="bad-svc", k8s_namespace_name="prod"} 42
+```
+
+When `reset_on_collect: true` is set, counters are zeroed after each collection cycle (Prometheus
+scrape or OTLP push interval), so each collection reports only the items dropped _since the last
+collection_ — a "release on scrape" pattern.
+
+### Configuration
+
+```yaml
+processors:
+  filter:
+    dropped_group_by:
+      # Required: resource attribute keys to group dropped items by.
+      attributes: [service.name]
+
+      # Maximum number of distinct attribute-value combinations to track.
+      # Additional combinations are accumulated in a single "_overflow" bucket.
+      # Default: 1000
+      max_entries: 1000
+
+      # Reset counters to zero after each metrics collection cycle.
+      # Set to true for "release on collect" (delta) semantics.
+      # Default: false (cumulative)
+      reset_on_collect: true
+
+      # Override the emitted metric name.
+      # Default: otelcol_filter_dropped_by_group
+      metric_name: otelcol_filter_dropped_by_group
+```
+
+### Overflow bucket
+
+When the number of distinct attribute-value tuples reaches `max_entries`, all subsequent new
+combinations are accumulated under a single overflow bucket with the label `_overflow="true"`.
+Existing buckets (those seen before the limit was reached) continue to accumulate normally.
+
+### Example: service.name allowlist with drop monitoring
+
+The following pipeline keeps only traffic from known services and exposes per-`service.name` drop
+counts on a Prometheus endpoint so you can identify which unknown services are sending data.
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc: {}
+
+processors:
+  filter/allowlist:
+    error_mode: ignore
+    trace_conditions:
+      - not(resource.attributes["service.name"] in ["checkout", "payments", "frontend"])
+    metric_conditions:
+      - not(resource.attributes["service.name"] in ["checkout", "payments", "frontend"])
+    log_conditions:
+      - not(resource.attributes["service.name"] in ["checkout", "payments", "frontend"])
+    dropped_group_by:
+      attributes: [service.name]
+      reset_on_collect: true     # each scrape shows counts since the last scrape
+
+exporters:
+  otlp:
+    endpoint: "otelcol:4317"
+  prometheus:
+    endpoint: "0.0.0.0:8888"
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [filter/allowlist]
+      exporters: [otlp]
+    metrics:
+      receivers: [otlp]
+      processors: [filter/allowlist]
+      exporters: [otlp]
+    logs:
+      receivers: [otlp]
+      processors: [filter/allowlist]
+      exporters: [otlp]
+```
+
+After scraping `http://localhost:8888/metrics` you will see lines such as:
+
+```
+# HELP otelcol_filter_dropped_by_group Number of items dropped by the filter processor grouped by resource attributes [Development]
+# TYPE otelcol_filter_dropped_by_group gauge
+otelcol_filter_dropped_by_group{service_name="bad-actor",otelcol_filter_filter_allowlist=""} 317
+otelcol_filter_dropped_by_group{service_name="unknown-worker",otelcol_filter_filter_allowlist=""} 5
+```
+
+### Grouping by multiple attributes
+
+You can group by any combination of resource attributes:
+
+```yaml
+processors:
+  filter/allowlist:
+    error_mode: ignore
+    trace_conditions:
+      - not(resource.attributes["service.name"] in ["checkout", "payments"])
+    dropped_group_by:
+      attributes: [service.name, k8s.namespace.name, k8s.cluster.name]
+      max_entries: 500
+      reset_on_collect: true
+```
+
+If a resource does not carry one of the listed attributes, the corresponding label value is an empty
+string in the metric.
 
 ## Legacy Configuration
 

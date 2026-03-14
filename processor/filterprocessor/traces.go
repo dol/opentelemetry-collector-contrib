@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/pipeline"
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/processorhelper"
+	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 
@@ -39,7 +40,7 @@ func newFilterSpansProcessor(set processor.Settings, cfg *Config) (*filterSpanPr
 		logger: set.Logger,
 	}
 
-	fpt, err := newFilterTelemetry(set, pipeline.SignalTraces)
+	fpt, err := newFilterTelemetry(set, pipeline.SignalTraces, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("error creating filter processor telemetry: %w", err)
 	}
@@ -151,6 +152,7 @@ func (fsp *filterSpanProcessor) processSkipExpression(ctx context.Context, td pt
 				return false
 			}
 			if skip {
+				fsp.telemetry.recordGroup(resource.Attributes(), countScopeSpans(rs.ScopeSpans()))
 				return true
 			}
 		}
@@ -168,6 +170,7 @@ func (fsp *filterSpanProcessor) processSkipExpression(ctx context.Context, td pt
 						return false
 					}
 					if skip {
+						fsp.telemetry.recordGroup(resource.Attributes(), 1)
 						return true
 					}
 				}
@@ -192,7 +195,37 @@ func (fsp *filterSpanProcessor) processSkipExpression(ctx context.Context, td pt
 	return td, errs
 }
 
+// countScopeSpans sums the number of spans across all scope spans slices.
+func countScopeSpans(sss ptrace.ScopeSpansSlice) int64 {
+	n := int64(0)
+	for i := 0; i < sss.Len(); i++ {
+		n += int64(sss.At(i).Spans().Len())
+	}
+	return n
+}
+
 func (fsp *filterSpanProcessor) processConditions(ctx context.Context, td ptrace.Traces) (ptrace.Traces, error) {
+	// Snapshot per-group span counts before processing so we can report what was dropped.
+	type groupBefore struct {
+		count   int64
+		attrSet attribute.Set
+	}
+	var before map[string]groupBefore
+	if fsp.telemetry.droppedGroup != nil {
+		before = make(map[string]groupBefore)
+		td.ResourceSpans().Range(func(_ int, rs ptrace.ResourceSpans) bool {
+			key, otelAttrs := buildGroupKeyAndAttrs(rs.Resource().Attributes(), fsp.telemetry.droppedGroup.attributeKeys)
+			n := countScopeSpans(rs.ScopeSpans())
+			if gs, ok := before[key]; ok {
+				gs.count += n
+				before[key] = gs
+			} else {
+				before[key] = groupBefore{count: n, attrSet: attribute.NewSet(otelAttrs...)}
+			}
+			return true
+		})
+	}
+
 	var errs error
 	for _, consumer := range fsp.consumers {
 		err := consumer.ConsumeTraces(ctx, td)
@@ -200,5 +233,21 @@ func (fsp *filterSpanProcessor) processConditions(ctx context.Context, td ptrace
 			errs = multierr.Append(errs, err)
 		}
 	}
+
+	// Record per-group drops by comparing counts after processing.
+	if fsp.telemetry.droppedGroup != nil && len(before) > 0 {
+		after := make(map[string]int64)
+		td.ResourceSpans().Range(func(_ int, rs ptrace.ResourceSpans) bool {
+			key, _ := buildGroupKeyAndAttrs(rs.Resource().Attributes(), fsp.telemetry.droppedGroup.attributeKeys)
+			after[key] += countScopeSpans(rs.ScopeSpans())
+			return true
+		})
+		for key, gs := range before {
+			if dropped := gs.count - after[key]; dropped > 0 {
+				fsp.telemetry.droppedGroup.recordWithSet(key, gs.attrSet, dropped)
+			}
+		}
+	}
+
 	return td, errs
 }

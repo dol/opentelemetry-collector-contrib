@@ -30,6 +30,36 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor/internal/condition"
 )
 
+// DroppedGroupByConfig configures an optional per-group drop counter that is exported as an
+// observable OTLP metric.  Each entry in Attributes becomes a label on the metric, and the
+// counter is keyed by the tuple of their values so you can see which origin (service, namespace,
+// …) is violating the contract.
+//
+// Example:
+//
+//	dropped_group_by:
+//	  attributes: [service.name, k8s.namespace.name]
+//	  max_entries: 1000
+//	  reset_on_collect: true        # release counts on every Prometheus scrape / OTLP push
+//	  metric_name: otelcol_filter_dropped_by_group   # optional override
+type DroppedGroupByConfig struct {
+	// Attributes is the list of resource attribute keys to group dropped items by.
+	Attributes []string `mapstructure:"attributes"`
+
+	// MaxEntries is the maximum number of distinct attribute-value combinations to track.
+	// When exceeded, further combinations are accumulated under an "_overflow" bucket.
+	// Defaults to 1000.
+	MaxEntries int `mapstructure:"max_entries"`
+
+	// ResetOnCollect resets the per-group counters to zero after each metrics collection
+	// (i.e. after each Prometheus scrape or OTLP export interval).
+	// Set to true to implement "release on collect" semantics.
+	ResetOnCollect bool `mapstructure:"reset_on_collect"`
+
+	// MetricName overrides the default metric name "otelcol_filter_dropped_by_group".
+	MetricName string `mapstructure:"metric_name"`
+}
+
 // Config defines configuration for Resource processor.
 type Config struct {
 	// ErrorMode determines how the processor reacts to errors that occur while processing an OTTL condition.
@@ -54,6 +84,10 @@ type Config struct {
 	LogConditions     []condition.ContextConditions `mapstructure:"log_conditions"`
 	TraceConditions   []condition.ContextConditions `mapstructure:"trace_conditions"`
 	ProfileConditions []condition.ContextConditions `mapstructure:"profile_conditions"`
+
+	// DroppedGroupBy configures optional per-group drop counters exported as an observable
+	// OTLP metric.  Only active when Attributes is non-empty.
+	DroppedGroupBy DroppedGroupByConfig `mapstructure:"dropped_group_by"`
 
 	resourceFunctions  map[string]ottl.Factory[*ottlresource.TransformContext]
 	dataPointFunctions map[string]ottl.Factory[*ottldatapoint.TransformContext]
