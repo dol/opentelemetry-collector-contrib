@@ -183,18 +183,18 @@ func (a *logCounter) Increment() {
 
 // getResourceKey creates a unique hash for the resource to use as a map key
 func getResourceKey(resource pcommon.Resource) uint64 {
-	return pdatautil.Hash64(
-		pdatautil.WithMap(resource.Attributes()),
-	)
+	var hasher pdatautil.Hasher
+	hasher.WriteMap(resource.Attributes())
+	return hasher.Sum64()
 }
 
 // getScopeKey creates a unique hash for the scope to use as a map key
 func getScopeKey(scope pcommon.InstrumentationScope) uint64 {
-	return pdatautil.Hash64(
-		pdatautil.WithMap(scope.Attributes()),
-		pdatautil.WithString(scope.Name()),
-		pdatautil.WithString(scope.Version()),
-	)
+	var hasher pdatautil.Hasher
+	hasher.WriteMap(scope.Attributes())
+	hasher.WriteString(scope.Name())
+	hasher.WriteString(scope.Version())
+	return hasher.Sum64()
 }
 
 // getLogKey creates a unique hash for the log record to use as a map key.
@@ -202,28 +202,30 @@ func getScopeKey(scope pcommon.InstrumentationScope) uint64 {
 // If no dedupFields are found in the log record, all fields are hashed.
 func getLogKey(logRecord plog.LogRecord, dedupFields []string) uint64 {
 	if len(dedupFields) > 0 {
-		var opts []pdatautil.HashOption
+		var hasher pdatautil.Hasher
+		foundDedupField := false
 
 		for _, field := range dedupFields {
 			parts := splitField(field)
 			if m, ok := getMap(logRecord, parts[0]); ok {
 				if value, ok := getKeyValue(m, parts[1:]); ok {
-					opts = append(opts, pdatautil.WithString(value.AsString()))
+					hasher.WriteString(value.AsString())
+					foundDedupField = true
 				}
 			}
 		}
 
-		if len(opts) > 0 {
-			return pdatautil.Hash64(opts...)
+		if foundDedupField {
+			return hasher.Sum64()
 		}
 	}
 
-	return pdatautil.Hash64(
-		pdatautil.WithMap(logRecord.Attributes()),
-		pdatautil.WithValue(logRecord.Body()),
-		pdatautil.WithString(logRecord.SeverityNumber().String()),
-		pdatautil.WithString(logRecord.SeverityText()),
-	)
+	var hasher pdatautil.Hasher
+	hasher.WriteMap(logRecord.Attributes())
+	hasher.WriteValue(logRecord.Body())
+	hasher.WriteString(logRecord.SeverityNumber().String())
+	hasher.WriteString(logRecord.SeverityText())
+	return hasher.Sum64()
 }
 
 func getMap(logRecord plog.LogRecord, leadingPart string) (pcommon.Map, bool) {

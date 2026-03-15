@@ -29,6 +29,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"gopkg.in/yaml.v3"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/exp/metrics"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest/pmetrictest"
 )
@@ -215,6 +216,68 @@ func compareMetricsMaps(t *testing.T, expected, actual map[string]pmetric.Metric
 	}
 }
 
+func compareMetricsMapValues(t *testing.T, expected, actual map[string]pmetric.Metrics) {
+	expectedValues := make([]pmetric.Metrics, 0, len(expected))
+	for _, md := range expected {
+		expectedValues = append(expectedValues, md)
+	}
+
+	actualValues := make([]pmetric.Metrics, 0, len(actual))
+	for _, md := range actual {
+		actualValues = append(actualValues, md)
+	}
+
+	require.Len(t, actualValues, len(expectedValues))
+
+	used := make([]bool, len(actualValues))
+	for _, expectedMD := range expectedValues {
+		matched := false
+		for i, actualMD := range actualValues {
+			if used[i] {
+				continue
+			}
+
+			err := pmetrictest.CompareMetrics(
+				expectedMD, actualMD,
+				pmetrictest.IgnoreResourceMetricsOrder(),
+				pmetrictest.IgnoreScopeMetricsOrder(),
+				pmetrictest.IgnoreMetricsOrder(),
+				pmetrictest.IgnoreMetricDataPointsOrder(),
+			)
+			if err == nil {
+				used[i] = true
+				matched = true
+				break
+			}
+		}
+
+		require.True(t, matched, "failed to find matching metrics batch")
+	}
+}
+
+func mergeMetricsMapValues(values map[string]pmetric.Metrics) pmetric.Metrics {
+	merged := pmetric.NewMetrics()
+	for _, md := range values {
+		metrics.Merge(merged, md)
+	}
+	return merged
+}
+
+func loadMetricsMapForAttributeRouting(t *testing.T, path string, attrs []string) map[string]pmetric.Metrics {
+	expected := loadMetricsMap(t, path)
+	rerouted := make(map[string]pmetric.Metrics, len(expected))
+
+	for _, md := range expected {
+		split := splitMetricsByAttributes(md, attrs)
+		require.Len(t, split, 1)
+		for key, routedMD := range split {
+			rerouted[key] = routedMD
+		}
+	}
+
+	return rerouted
+}
+
 func TestSplitMetricsByResourceServiceName(t *testing.T) {
 	t.Parallel()
 
@@ -259,35 +322,45 @@ func TestSplitMetrics(t *testing.T) {
 	testCases := []struct {
 		name      string
 		splitFunc func(md pmetric.Metrics) map[string]pmetric.Metrics
+		expected  func(t *testing.T, path string) map[string]pmetric.Metrics
 	}{
 		{
 			name:      "basic_resource_id",
 			splitFunc: splitMetricsByResourceID,
+			expected:  loadMetricsMap,
 		},
 		{
 			name:      "duplicate_resource_id",
 			splitFunc: splitMetricsByResourceID,
+			expected:  loadMetricsMap,
 		},
 		{
 			name:      "basic_metric_name",
 			splitFunc: splitMetricsByMetricName,
+			expected:  loadMetricsMap,
 		},
 		{
 			name:      "duplicate_metric_name",
 			splitFunc: splitMetricsByMetricName,
+			expected:  loadMetricsMap,
 		},
 		{
 			name:      "basic_stream_id",
 			splitFunc: splitMetricsByStreamID,
+			expected:  loadMetricsMap,
 		},
 		{
 			name:      "duplicate_stream_id",
 			splitFunc: splitMetricsByStreamID,
+			expected:  loadMetricsMap,
 		},
 		{
 			name: "basic_attributes",
 			splitFunc: func(md pmetric.Metrics) map[string]pmetric.Metrics {
 				return splitMetricsByAttributes(md, []string{"resource_key", "scope_key", "aaa"})
+			},
+			expected: func(t *testing.T, path string) map[string]pmetric.Metrics {
+				return loadMetricsMapForAttributeRouting(t, path, []string{"resource_key", "scope_key", "aaa"})
 			},
 		},
 		{
@@ -295,17 +368,26 @@ func TestSplitMetrics(t *testing.T) {
 			splitFunc: func(md pmetric.Metrics) map[string]pmetric.Metrics {
 				return splitMetricsByAttributes(md, []string{"resource_key"})
 			},
+			expected: func(t *testing.T, path string) map[string]pmetric.Metrics {
+				return loadMetricsMapForAttributeRouting(t, path, []string{"resource_key"})
+			},
 		},
 		{
 			name: "attributes_scope_only",
 			splitFunc: func(md pmetric.Metrics) map[string]pmetric.Metrics {
 				return splitMetricsByAttributes(md, []string{"scope_key"})
 			},
+			expected: func(t *testing.T, path string) map[string]pmetric.Metrics {
+				return loadMetricsMapForAttributeRouting(t, path, []string{"scope_key"})
+			},
 		},
 		{
 			name: "attributes_datapoint_only",
 			splitFunc: func(md pmetric.Metrics) map[string]pmetric.Metrics {
 				return splitMetricsByAttributes(md, []string{"aaa"})
+			},
+			expected: func(t *testing.T, path string) map[string]pmetric.Metrics {
+				return loadMetricsMapForAttributeRouting(t, path, []string{"aaa"})
 			},
 		},
 	}
@@ -319,7 +401,7 @@ func TestSplitMetrics(t *testing.T) {
 			input, err := golden.ReadMetrics(filepath.Join(dir, "input.yaml"))
 			require.NoError(t, err)
 
-			expectedOutput := loadMetricsMap(t, filepath.Join(dir, "output.yaml"))
+			expectedOutput := tc.expected(t, filepath.Join(dir, "output.yaml"))
 
 			output := tc.splitFunc(input)
 			require.NoError(t, err)
@@ -638,7 +720,19 @@ func TestConsumeMetrics_TripleEndpoint(t *testing.T) {
 				actualOutput["endpoint-3"] = pmetric.NewMetrics()
 			}
 
-			compareMetricsMaps(t, expectedOutput, actualOutput)
+			if tc.routingKey == attrRoutingStr {
+				expectedMerged := mergeMetricsMapValues(expectedOutput)
+				actualMerged := mergeMetricsMapValues(actualOutput)
+				require.NoError(t, pmetrictest.CompareMetrics(
+					expectedMerged, actualMerged,
+					pmetrictest.IgnoreResourceMetricsOrder(),
+					pmetrictest.IgnoreScopeMetricsOrder(),
+					pmetrictest.IgnoreMetricsOrder(),
+					pmetrictest.IgnoreMetricDataPointsOrder(),
+				))
+			} else {
+				compareMetricsMaps(t, expectedOutput, actualOutput)
+			}
 		})
 	}
 }

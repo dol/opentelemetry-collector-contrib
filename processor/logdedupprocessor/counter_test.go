@@ -16,6 +16,12 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/logdedupprocessor/internal/metadata"
 )
 
+func hash64(write func(*pdatautil.Hasher)) uint64 {
+	var hasher pdatautil.Hasher
+	write(&hasher)
+	return hasher.Sum64()
+}
+
 func Test_newLogAggregator(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	telemetryBuilder, err := metadata.NewTelemetryBuilder(componenttest.NewNopTelemetrySettings())
@@ -280,13 +286,13 @@ func Test_getLogKey(t *testing.T) {
 				logRecord.Body().Map().PutStr("dedup_key", dedupValue)
 				logRecord.Attributes().PutStr("dedup_key", dedupValue)
 
-				expected := pdatautil.Hash64(
-					pdatautil.WithString(dedupValue),
-				)
-				expectedMulti := pdatautil.Hash64(
-					pdatautil.WithString(dedupValue),
-					pdatautil.WithString(dedupValue), //nolint:gocritic // Intentional: testing multi-key deduplication with same value
-				)
+				expected := hash64(func(hasher *pdatautil.Hasher) {
+					hasher.WriteString(dedupValue)
+				})
+				expectedMulti := hash64(func(hasher *pdatautil.Hasher) {
+					hasher.WriteString(dedupValue)
+					hasher.WriteString(dedupValue) //nolint:gocritic // Intentional: testing multi-key deduplication with same value
+				})
 
 				require.Equal(t, expected, getLogKey(logRecord, []string{"body.dedup_key"}))
 				require.Equal(t, expected, getLogKey(logRecord, []string{"attributes.dedup_key"}))
@@ -299,12 +305,12 @@ func Test_getLogKey(t *testing.T) {
 				logRecord := plog.NewLogRecord()
 				logRecord.Attributes().PutStr("str", "attr str")
 
-				expected := pdatautil.Hash64(
-					pdatautil.WithMap(logRecord.Attributes()),
-					pdatautil.WithValue(logRecord.Body()),
-					pdatautil.WithString(logRecord.SeverityNumber().String()),
-					pdatautil.WithString(logRecord.SeverityText()),
-				)
+				expected := hash64(func(hasher *pdatautil.Hasher) {
+					hasher.WriteMap(logRecord.Attributes())
+					hasher.WriteValue(logRecord.Body())
+					hasher.WriteString(logRecord.SeverityNumber().String())
+					hasher.WriteString(logRecord.SeverityText())
+				})
 
 				require.Equal(t, expected, getLogKey(logRecord, []string{"body.dedup_key"}))
 			},
@@ -315,12 +321,12 @@ func Test_getLogKey(t *testing.T) {
 				logRecord := plog.NewLogRecord()
 				logRecord.Body().SetStr("hello, this is a message body string")
 
-				expected := pdatautil.Hash64(
-					pdatautil.WithMap(logRecord.Attributes()),
-					pdatautil.WithValue(logRecord.Body()),
-					pdatautil.WithString(logRecord.SeverityNumber().String()),
-					pdatautil.WithString(logRecord.SeverityText()),
-				)
+				expected := hash64(func(hasher *pdatautil.Hasher) {
+					hasher.WriteMap(logRecord.Attributes())
+					hasher.WriteValue(logRecord.Body())
+					hasher.WriteString(logRecord.SeverityNumber().String())
+					hasher.WriteString(logRecord.SeverityText())
+				})
 
 				require.Equal(t, expected, getLogKey(logRecord, []string{"body.dedup_key"}))
 			},

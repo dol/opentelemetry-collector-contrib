@@ -1,4 +1,4 @@
-dp1:
+attributes/a98929541476d27b:
   resourceMetrics:
     - schemaUrl: https://test-res-schema.com/schema
       resource:
@@ -27,7 +27,7 @@ dp1:
                       - key: aaa
                         value:
                           stringValue: dp1
-dp2:
+attributes/b3f904724854517a:
   resourceMetrics:
     - schemaUrl: https://test-res-schema.com/schema
       resource:

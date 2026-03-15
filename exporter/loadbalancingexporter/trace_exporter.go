@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/otlpexporter"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/multierr"
@@ -180,8 +180,12 @@ func routingIdentifiersFromTraces(td ptrace.Traces, rType routingKey, attrs []st
 
 		return ids, nil
 	case svcRouting:
-		// Service Name is still handled as an "attribute router", it's just expressed as a "pseudo attribute"
-		attrs = []string{"service.name"}
+		for i := 0; i < rs.Len(); i++ {
+			serviceName, _ := rs.At(i).Resource().Attributes().Get("service.name")
+			ids[serviceName.Str()] = true
+		}
+
+		return ids, nil
 	case attrRouting:
 		// By default, we'll just use the input provided.
 		break
@@ -191,51 +195,30 @@ func routingIdentifiersFromTraces(td ptrace.Traces, rType routingKey, attrs []st
 
 	// Composite the attributes together as a key.
 	for i := 0; i < rs.Len(); i++ {
-		// rKey will never return an error. See
-		// 1. https://pkg.go.dev/bytes#Buffer.Write
-		// 2. https://stackoverflow.com/a/70388629
-		var rKey strings.Builder
+		resourceSpans := rs.At(i)
+		scopeSpans := resourceSpans.ScopeSpans()
+		scope := scopeSpans.At(0).Scope()
+		span := scopeSpans.At(0).Spans().At(0)
 
-		for _, a := range attrs {
-			// resource spans
-			rAttr, ok := rs.At(i).Resource().Attributes().Get(a)
-			if ok {
-				rKey.WriteString(rAttr.Str())
-				continue
+		routingID := buildAttributeRoutingKey(attrs, func(attr string) (pcommon.Value, bool) {
+			if value, ok := resourceSpans.Resource().Attributes().Get(attr); ok {
+				return value, true
 			}
 
-			// ils or "instrumentation library spans"
-			ils := rs.At(0).ScopeSpans()
-			iAttr, ok := ils.At(0).Scope().Attributes().Get(a)
-			if ok {
-				rKey.WriteString(iAttr.Str())
-				continue
+			if value, ok := scope.Attributes().Get(attr); ok {
+				return value, true
 			}
 
-			// the lowest level span (or what engineers regularly interact with)
-			spans := ils.At(0).Spans()
-
-			if a == pseudoAttrSpanKind {
-				rKey.WriteString(spans.At(0).Kind().String())
-
-				continue
+			switch attr {
+			case pseudoAttrSpanKind:
+				return pcommon.NewValueStr(span.Kind().String()), true
+			case pseudoAttrSpanName:
+				return pcommon.NewValueStr(span.Name()), true
 			}
 
-			if a == pseudoAttrSpanName {
-				rKey.WriteString(spans.At(0).Name())
-
-				continue
-			}
-
-			sAttr, ok := spans.At(0).Attributes().Get(a)
-			if ok {
-				rKey.WriteString(sAttr.Str())
-				continue
-			}
-		}
-
-		// No matter what, there will be a key here (even if that key is "").
-		ids[rKey.String()] = true
+			return span.Attributes().Get(attr)
+		})
+		ids[routingID] = true
 	}
 
 	return ids, nil

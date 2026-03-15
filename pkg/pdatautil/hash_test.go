@@ -333,6 +333,101 @@ func TestMapValueHashNotEqual(t *testing.T) {
 	}
 }
 
+func TestHasherMatchesValueAndMapHash(t *testing.T) {
+	t.Run("map", func(t *testing.T) {
+		m := pcommon.NewMap()
+		m.PutStr("k1", "v1")
+		m.PutInt("k2", 2)
+
+		var hasher Hasher
+		hasher.WriteMap(m)
+
+		assert.Equal(t, MapHash(m), hasher.Sum128())
+	})
+
+	t.Run("value", func(t *testing.T) {
+		v := pcommon.NewValueMap()
+		v.Map().PutStr("k", "v")
+
+		var hasher Hasher
+		hasher.WriteValue(v)
+
+		assert.Equal(t, ValueHash(v), hasher.Sum128())
+	})
+}
+
+func TestHasherSum64IsStableAcrossCalls(t *testing.T) {
+	var hasher Hasher
+	hasher.WriteString("one")
+	hasher.WriteString("two")
+
+	first := hasher.Sum64()
+	second := hasher.Sum64()
+
+	assert.Equal(t, first, second)
+}
+
+func TestHasherResetClearsState(t *testing.T) {
+	var hasher Hasher
+	hasher.WriteString("before-reset")
+	require.NotEqual(t, emptyHash, hasher.Sum128())
+
+	hasher.Reset()
+
+	assert.Equal(t, emptyHash, hasher.Sum128())
+}
+
+func TestTypedSeparatorFormatterDistinguishesMissingAndEmpty(t *testing.T) {
+	var missing TypedSeparatorFormatter
+	missing.WriteString("attr")
+	missing.WriteMissing()
+
+	var empty TypedSeparatorFormatter
+	empty.WriteString("attr")
+	empty.WriteValue(pcommon.NewValueEmpty())
+
+	assert.NotEqual(t, missing.String(), empty.String())
+}
+
+func TestTypedSeparatorFormatterDistinguishesValueTypes(t *testing.T) {
+	var stringFormatter TypedSeparatorFormatter
+	stringFormatter.WriteString("attr")
+	stringFormatter.WriteValue(pcommon.NewValueStr("1"))
+
+	var intFormatter TypedSeparatorFormatter
+	intFormatter.WriteString("attr")
+	intFormatter.WriteValue(pcommon.NewValueInt(1))
+
+	assert.NotEqual(t, stringFormatter.String(), intFormatter.String())
+}
+
+func TestTypedSeparatorFormatterMapOrderStable(t *testing.T) {
+	mapOne := pcommon.NewMap()
+	mapOne.PutStr("b", "two")
+	mapOne.PutInt("a", 1)
+
+	mapTwo := pcommon.NewMap()
+	mapTwo.PutInt("a", 1)
+	mapTwo.PutStr("b", "two")
+
+	var one TypedSeparatorFormatter
+	one.WriteMap(mapOne)
+
+	var two TypedSeparatorFormatter
+	two.WriteMap(mapTwo)
+
+	assert.Equal(t, one.String(), two.String())
+}
+
+func TestTypedSeparatorFormatterResetClearsState(t *testing.T) {
+	var formatter TypedSeparatorFormatter
+	formatter.WriteString("before-reset")
+
+	formatter.Reset()
+
+	assert.Empty(t, formatter.String())
+}
+
 func BenchmarkMapHashFourItems(b *testing.B) {
 	m := pcommon.NewMap()
 	m.PutStr("test-string-key2", "test-value-2")

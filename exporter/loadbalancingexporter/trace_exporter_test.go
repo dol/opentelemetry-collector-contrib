@@ -260,9 +260,9 @@ func TestAttributeBasedRouting(t *testing.T) {
 			batch: simpleTracesWithServiceName(),
 
 			res: map[string]bool{
-				"service-name-1": true,
-				"service-name-2": true,
-				"service-name-3": true,
+				testAttributeRoutingKey([]string{"service.name"}, map[string]pcommon.Value{"service.name": pcommon.NewValueStr("service-name-1")}): true,
+				testAttributeRoutingKey([]string{"service.name"}, map[string]pcommon.Value{"service.name": pcommon.NewValueStr("service-name-2")}): true,
+				testAttributeRoutingKey([]string{"service.name"}, map[string]pcommon.Value{"service.name": pcommon.NewValueStr("service-name-3")}): true,
 			},
 		},
 		{
@@ -280,7 +280,7 @@ func TestAttributeBasedRouting(t *testing.T) {
 				return traces
 			}(),
 			res: map[string]bool{
-				"/foo/bar/baz": true,
+				testAttributeRoutingKey([]string{"span.name"}, map[string]pcommon.Value{"span.name": pcommon.NewValueStr("/foo/bar/baz")}): true,
 			},
 		},
 		{
@@ -298,7 +298,7 @@ func TestAttributeBasedRouting(t *testing.T) {
 				return traces
 			}(),
 			res: map[string]bool{
-				"Client": true,
+				testAttributeRoutingKey([]string{"span.kind"}, map[string]pcommon.Value{"span.kind": pcommon.NewValueStr("Client")}): true,
 			},
 		},
 		{
@@ -320,7 +320,10 @@ func TestAttributeBasedRouting(t *testing.T) {
 				return traces
 			}(),
 			res: map[string]bool{
-				"service-name-1Client": true,
+				testAttributeRoutingKey([]string{"service.name", "span.kind"}, map[string]pcommon.Value{
+					"service.name": pcommon.NewValueStr("service-name-1"),
+					"span.kind":    pcommon.NewValueStr("Client"),
+				}): true,
 			},
 		},
 		{
@@ -339,7 +342,9 @@ func TestAttributeBasedRouting(t *testing.T) {
 				return traces
 			}(),
 			res: map[string]bool{
-				"Server": true,
+				testAttributeRoutingKey([]string{"missing.attribute", "span.kind"}, map[string]pcommon.Value{
+					"span.kind": pcommon.NewValueStr("Server"),
+				}): true,
 			},
 		},
 		{
@@ -357,7 +362,7 @@ func TestAttributeBasedRouting(t *testing.T) {
 				return traces
 			}(),
 			res: map[string]bool{
-				"/foo/bar/baz": true,
+				testAttributeRoutingKey([]string{"http.path"}, map[string]pcommon.Value{"http.path": pcommon.NewValueStr("/foo/bar/baz")}): true,
 			},
 		},
 		{
@@ -381,7 +386,11 @@ func TestAttributeBasedRouting(t *testing.T) {
 				return traces
 			}(),
 			res: map[string]bool{
-				"service-name-1Client/foo/bar/baz": true,
+				testAttributeRoutingKey([]string{"service.name", "span.kind", "http.path"}, map[string]pcommon.Value{
+					"service.name": pcommon.NewValueStr("service-name-1"),
+					"span.kind":    pcommon.NewValueStr("Client"),
+					"http.path":    pcommon.NewValueStr("/foo/bar/baz"),
+				}): true,
 			},
 		},
 	} {

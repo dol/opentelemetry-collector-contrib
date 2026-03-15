@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -264,24 +263,23 @@ func splitMetricsByAttributes(md pmetric.Metrics, attrs []string) map[string]pme
 		rm := md.ResourceMetrics().At(i)
 		resourceAttrs := rm.Resource().Attributes()
 
-		var baseResourceKeyBuilder strings.Builder
-		pendingResourceAttrs := make([]string, 0, len(attrs))
-		for _, attr := range attrs {
+		resourceValues := make([]attributeRoutingValue, len(attrs))
+		pendingResourceAttrs := make([]int, 0, len(attrs))
+		for idx, attr := range attrs {
 			if val, ok := resourceAttrs.Get(attr); ok {
-				baseResourceKeyBuilder.WriteString(val.Str())
+				resourceValues[idx] = attributeRoutingValue{value: val, present: true}
 				continue
 			}
 
-			pendingResourceAttrs = append(pendingResourceAttrs, attr)
+			pendingResourceAttrs = append(pendingResourceAttrs, idx)
 		}
-		baseResourceKey := baseResourceKeyBuilder.String()
 
 		if len(pendingResourceAttrs) == 0 {
 			// All split attributes are on resource, so no per-scope/datapoint keying.
 			newMD := pmetric.NewMetrics()
 			rmClone := newMD.ResourceMetrics().AppendEmpty()
 			rm.CopyTo(rmClone)
-			appendMetricsByKey(results, baseResourceKey, newMD)
+			appendMetricsByKey(results, buildAttributeRoutingKeyFromValues(attrs, resourceValues), newMD)
 			continue
 		}
 
@@ -289,18 +287,19 @@ func splitMetricsByAttributes(md pmetric.Metrics, attrs []string) map[string]pme
 			sm := rm.ScopeMetrics().At(j)
 			scopeAttrs := sm.Scope().Attributes()
 
-			var baseScopeKeyBuilder strings.Builder
-			baseScopeKeyBuilder.WriteString(baseResourceKey)
-			pendingScopeAttrs := make([]string, 0, len(attrs))
-			for _, attr := range pendingResourceAttrs {
+			scopeValues := make([]attributeRoutingValue, len(attrs))
+			copy(scopeValues, resourceValues)
+
+			pendingScopeAttrs := make([]int, 0, len(pendingResourceAttrs))
+			for _, idx := range pendingResourceAttrs {
+				attr := attrs[idx]
 				if val, ok := scopeAttrs.Get(attr); ok {
-					baseScopeKeyBuilder.WriteString(val.Str())
+					scopeValues[idx] = attributeRoutingValue{value: val, present: true}
 					continue
 				}
 
-				pendingScopeAttrs = append(pendingScopeAttrs, attr)
+				pendingScopeAttrs = append(pendingScopeAttrs, idx)
 			}
-			baseScopeKey := baseScopeKeyBuilder.String()
 
 			if len(pendingScopeAttrs) == 0 {
 				// All split attributes are on resource/scope, so no per-datapoint keying.
@@ -312,7 +311,7 @@ func splitMetricsByAttributes(md pmetric.Metrics, attrs []string) map[string]pme
 				smClone := rmClone.ScopeMetrics().AppendEmpty()
 				sm.CopyTo(smClone)
 
-				appendMetricsByKey(results, baseScopeKey, newMD)
+				appendMetricsByKey(results, buildAttributeRoutingKeyFromValues(attrs, scopeValues), newMD)
 				continue
 			}
 
@@ -320,14 +319,17 @@ func splitMetricsByAttributes(md pmetric.Metrics, attrs []string) map[string]pme
 				m := sm.Metrics().At(k)
 
 				forEachMetricDataPoint(rm, sm, m, func(dp attrPoint, newMD pmetric.Metrics) {
-					var key strings.Builder
-					key.WriteString(baseScopeKey)
-					for _, attr := range pendingScopeAttrs {
+					dataPointValues := make([]attributeRoutingValue, len(attrs))
+					copy(dataPointValues, scopeValues)
+
+					for _, idx := range pendingScopeAttrs {
+						attr := attrs[idx]
 						if val, ok := dp.Attributes().Get(attr); ok {
-							key.WriteString(val.Str())
+							dataPointValues[idx] = attributeRoutingValue{value: val, present: true}
 						}
 					}
-					appendMetricsByKey(results, key.String(), newMD)
+
+					appendMetricsByKey(results, buildAttributeRoutingKeyFromValues(attrs, dataPointValues), newMD)
 				})
 			}
 		}
