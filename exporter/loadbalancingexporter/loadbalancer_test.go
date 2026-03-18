@@ -150,7 +150,7 @@ func TestWithDNSSRVResolver(t *testing.T) {
 	// verify
 	assert.NotNil(t, res)
 	assert.True(t, ok)
-	assert.Equal(t, DNSModeSRV, res.mode)
+	assert.Equal(t, srvRecordResolverAttrSet, res.resolverAttrSet)
 }
 
 func TestWithDNSResolverNoEndpoints(t *testing.T) {

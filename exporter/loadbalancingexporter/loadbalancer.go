@@ -82,11 +82,10 @@ func newLoadBalancer(logger *zap.Logger, cfg component.Config, factory component
 
 		var err error
 		dnsResolver := oCfg.Resolver.DNS.Get()
-		res, err = newDNSResolver(
+		res, err = newARecordDNSResolver(
 			dnsLogger,
 			dnsResolver.Hostname,
 			dnsResolver.Port,
-			DNSModeStandard,
 			dnsResolver.Interval,
 			dnsResolver.Timeout,
 			telemetry,
@@ -100,11 +99,9 @@ func newLoadBalancer(logger *zap.Logger, cfg component.Config, factory component
 		srvLogger := logger.With(zap.String("resolver", "dnssrv"))
 
 		var err error
-		res, err = newDNSResolver(
+		res, err = newSRVRecordDNSResolver(
 			srvLogger,
 			srvResolver.Hostname,
-			"",
-			DNSModeSRV,
 			srvResolver.Interval,
 			srvResolver.Timeout,
 			telemetry,

@@ -26,39 +26,29 @@ const (
 	defaultResTimeout  = time.Second
 )
 
-// DNSResolveMode defines the DNS resolution mode
-type DNSResolveMode string
-
-const (
-	// DNSModeStandard uses standard A/AAAA record resolution
-	DNSModeStandard DNSResolveMode = "standard"
-	// DNSModeSRV uses SRV record resolution followed by A/AAAA resolution for each target
-	DNSModeSRV DNSResolveMode = "srv"
-)
-
 var (
 	errNoHostname = errors.New("no hostname specified to resolve the backends")
 
-	standardResolverAttr           = attribute.String("resolver", "dns")
-	standardResolverAttrSet        = attribute.NewSet(standardResolverAttr)
-	standardResolverSuccessAttrSet = attribute.NewSet(standardResolverAttr, attribute.Bool("success", true))
-	standardResolverFailureAttrSet = attribute.NewSet(standardResolverAttr, attribute.Bool("success", false))
+	aRecordResolverAttr           = attribute.String("resolver", "dns")
+	aRecordResolverAttrSet        = attribute.NewSet(aRecordResolverAttr)
+	aRecordResolverSuccessAttrSet = attribute.NewSet(aRecordResolverAttr, attribute.Bool("success", true))
+	aRecordResolverFailureAttrSet = attribute.NewSet(aRecordResolverAttr, attribute.Bool("success", false))
 
-	srvResolverAttr           = attribute.String("resolver", "dnssrv")
-	srvResolverAttrSet        = attribute.NewSet(srvResolverAttr)
-	srvResolverSuccessAttrSet = attribute.NewSet(srvResolverAttr, attribute.Bool("success", true))
-	srvResolverFailureAttrSet = attribute.NewSet(srvResolverAttr, attribute.Bool("success", false))
+	srvRecordResolverAttr           = attribute.String("resolver", "dnssrv")
+	srvRecordResolverAttrSet        = attribute.NewSet(srvRecordResolverAttr)
+	srvRecordResolverSuccessAttrSet = attribute.NewSet(srvRecordResolverAttr, attribute.Bool("success", true))
+	srvRecordResolverFailureAttrSet = attribute.NewSet(srvRecordResolverAttr, attribute.Bool("success", false))
 )
 
 type dnsResolver struct {
 	logger *zap.Logger
 
-	hostname    string
-	port        string // Only used in standard mode
-	mode        DNSResolveMode
-	resolver    netResolver
-	resInterval time.Duration
-	resTimeout  time.Duration
+	hostname        string
+	resolveBackends func(ctx context.Context) ([]string, error)
+	resolverAttrSet attribute.Set
+	resolver        netResolver
+	resInterval     time.Duration
+	resTimeout      time.Duration
 
 	endpoints         []string
 	onChangeCallbacks []func([]string)
@@ -75,11 +65,46 @@ type netResolver interface {
 	LookupSRV(ctx context.Context, service, proto, name string) (string, []*net.SRV, error)
 }
 
-func newDNSResolver(
+func newARecordDNSResolver(
 	logger *zap.Logger,
 	hostname string,
 	port string,
-	mode DNSResolveMode,
+	interval time.Duration,
+	timeout time.Duration,
+	tb *metadata.TelemetryBuilder,
+) (*dnsResolver, error) {
+	r, err := makeDNSResolver(logger, hostname, interval, timeout, tb)
+	if err != nil {
+		return nil, err
+	}
+	r.resolveBackends = func(ctx context.Context) ([]string, error) {
+		return resolveARecord(ctx, r.resolver, hostname, port, tb)
+	}
+	r.resolverAttrSet = aRecordResolverAttrSet
+	return r, nil
+}
+
+func newSRVRecordDNSResolver(
+	logger *zap.Logger,
+	hostname string,
+	interval time.Duration,
+	timeout time.Duration,
+	tb *metadata.TelemetryBuilder,
+) (*dnsResolver, error) {
+	r, err := makeDNSResolver(logger, hostname, interval, timeout, tb)
+	if err != nil {
+		return nil, err
+	}
+	r.resolveBackends = func(ctx context.Context) ([]string, error) {
+		return resolveSRV(ctx, r.resolver, hostname, logger, tb)
+	}
+	r.resolverAttrSet = srvRecordResolverAttrSet
+	return r, nil
+}
+
+func makeDNSResolver(
+	logger *zap.Logger,
+	hostname string,
 	interval time.Duration,
 	timeout time.Duration,
 	tb *metadata.TelemetryBuilder,
@@ -93,15 +118,10 @@ func newDNSResolver(
 	if timeout == 0 {
 		timeout = defaultResTimeout
 	}
-	if mode != DNSModeStandard && mode != DNSModeSRV {
-		return nil, fmt.Errorf("invalid DNS resolution mode: %s (must be %s or %s)", mode, DNSModeStandard, DNSModeSRV)
-	}
 
 	return &dnsResolver{
 		logger:      logger,
 		hostname:    hostname,
-		port:        port,
-		mode:        mode,
 		resolver:    &net.Resolver{},
 		resInterval: interval,
 		resTimeout:  timeout,
@@ -118,16 +138,11 @@ func (r *dnsResolver) start(ctx context.Context) error {
 	r.shutdownWg.Add(1)
 	go r.periodicallyResolve()
 
-	logFields := []zap.Field{
+	r.logger.Debug("DNS resolver started",
 		zap.String("hostname", r.hostname),
-		zap.String("mode", string(r.mode)),
 		zap.Duration("interval", r.resInterval),
 		zap.Duration("timeout", r.resTimeout),
-	}
-	if r.mode == DNSModeStandard && r.port != "" {
-		logFields = append(logFields, zap.String("port", r.port))
-	}
-	r.logger.Debug("DNS resolver started", logFields...)
+	)
 	return nil
 }
 
@@ -163,21 +178,7 @@ func (r *dnsResolver) periodicallyResolve() {
 }
 
 func (r *dnsResolver) resolve(ctx context.Context) ([]string, error) {
-	var backends []string
-	var err error
-	var attrSet attribute.Set
-
-	switch r.mode {
-	case DNSModeSRV:
-		backends, err = r.resolveSRV(ctx)
-		attrSet = srvResolverAttrSet
-	case DNSModeStandard:
-		backends, err = r.resolveStandard(ctx)
-		attrSet = standardResolverAttrSet
-	default:
-		return nil, fmt.Errorf("unknown DNS resolution mode: %s", r.mode)
-	}
-
+	backends, err := r.resolveBackends(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -194,9 +195,8 @@ func (r *dnsResolver) resolve(ctx context.Context) ([]string, error) {
 	r.endpoints = backends
 	r.updateLock.Unlock()
 
-	// Record metrics based on mode
-	r.telemetry.LoadbalancerNumBackends.Record(ctx, int64(len(backends)), metric.WithAttributeSet(attrSet))
-	r.telemetry.LoadbalancerNumBackendUpdates.Add(ctx, 1, metric.WithAttributeSet(attrSet))
+	r.telemetry.LoadbalancerNumBackends.Record(ctx, int64(len(backends)), metric.WithAttributeSet(r.resolverAttrSet))
+	r.telemetry.LoadbalancerNumBackendUpdates.Add(ctx, 1, metric.WithAttributeSet(r.resolverAttrSet))
 
 	// propagate the change
 	r.changeCallbackLock.RLock()
@@ -208,14 +208,14 @@ func (r *dnsResolver) resolve(ctx context.Context) ([]string, error) {
 	return r.endpoints, nil
 }
 
-func (r *dnsResolver) resolveStandard(ctx context.Context) ([]string, error) {
-	addrs, err := r.resolver.LookupIPAddr(ctx, r.hostname)
+func resolveARecord(ctx context.Context, res netResolver, hostname, port string, tb *metadata.TelemetryBuilder) ([]string, error) {
+	addrs, err := res.LookupIPAddr(ctx, hostname)
 	if err != nil {
-		r.telemetry.LoadbalancerNumResolutions.Add(ctx, 1, metric.WithAttributeSet(standardResolverFailureAttrSet))
+		tb.LoadbalancerNumResolutions.Add(ctx, 1, metric.WithAttributeSet(aRecordResolverFailureAttrSet))
 		return nil, err
 	}
 
-	r.telemetry.LoadbalancerNumResolutions.Add(ctx, 1, metric.WithAttributeSet(standardResolverSuccessAttrSet))
+	tb.LoadbalancerNumResolutions.Add(ctx, 1, metric.WithAttributeSet(aRecordResolverSuccessAttrSet))
 
 	backends := make([]string, len(addrs))
 	for i, ip := range addrs {
@@ -228,8 +228,8 @@ func (r *dnsResolver) resolveStandard(ctx context.Context) ([]string, error) {
 		}
 
 		// if a port is specified in the configuration, add it
-		if r.port != "" {
-			backend = fmt.Sprintf("%s:%s", backend, r.port)
+		if port != "" {
+			backend = fmt.Sprintf("%s:%s", backend, port)
 		}
 
 		backends[i] = backend
@@ -238,23 +238,22 @@ func (r *dnsResolver) resolveStandard(ctx context.Context) ([]string, error) {
 	return backends, nil
 }
 
-func (r *dnsResolver) resolveSRV(ctx context.Context) ([]string, error) {
-	_, srvs, err := r.resolver.LookupSRV(ctx, "", "", r.hostname)
+func resolveSRV(ctx context.Context, res netResolver, hostname string, logger *zap.Logger, tb *metadata.TelemetryBuilder) ([]string, error) {
+	_, srvs, err := res.LookupSRV(ctx, "", "", hostname)
 	if err != nil {
-		r.telemetry.LoadbalancerNumResolutions.Add(ctx, 1, metric.WithAttributeSet(srvResolverFailureAttrSet))
+		tb.LoadbalancerNumResolutions.Add(ctx, 1, metric.WithAttributeSet(srvRecordResolverFailureAttrSet))
 		return nil, err
 	}
 
-	r.telemetry.LoadbalancerNumResolutions.Add(ctx, 1, metric.WithAttributeSet(srvResolverSuccessAttrSet))
+	tb.LoadbalancerNumResolutions.Add(ctx, 1, metric.WithAttributeSet(srvRecordResolverSuccessAttrSet))
 
 	backends := []string{}
 
-	// DNS SRV mode: resolve A/AAAA for each SRV target
 	for _, srv := range srvs {
 		target := srv.Target
-		ips, err := r.resolver.LookupIPAddr(ctx, target)
+		ips, err := res.LookupIPAddr(ctx, target)
 		if err != nil {
-			r.logger.Warn("failed lookup of host for SRV target", zap.String("target", target), zap.Error(err))
+			logger.Warn("failed lookup of host for SRV target", zap.String("target", target), zap.Error(err))
 			continue
 		}
 		for _, ip := range ips {
@@ -262,6 +261,7 @@ func (r *dnsResolver) resolveSRV(ctx context.Context) ([]string, error) {
 			if ip.IP.To4() != nil {
 				backend = ip.String()
 			} else {
+				// it's an IPv6 address
 				backend = fmt.Sprintf("[%s]", ip.String())
 			}
 			backend = fmt.Sprintf("%s:%d", backend, srv.Port)
