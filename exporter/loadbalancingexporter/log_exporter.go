@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/exporter/otlpexporter"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
@@ -99,7 +100,7 @@ func (e *logExporterImp) consumeLog(ctx context.Context, ld plog.Logs) error {
 		balancingKey = random()
 	}
 
-	le, _, err := e.loadBalancer.exporterAndEndpoint(balancingKey[:])
+	le, endpoint, err := e.loadBalancer.exporterAndEndpoint(balancingKey[:])
 	if err != nil {
 		return err
 	}
@@ -107,16 +108,27 @@ func (e *logExporterImp) consumeLog(ctx context.Context, ld plog.Logs) error {
 	le.consumeWG.Add(1)
 	defer le.consumeWG.Done()
 
+	endpoint = endpointWithPort(endpoint)
 	start := time.Now()
 	err = le.ConsumeLogs(ctx, ld)
 	duration := time.Since(start)
 	e.telemetry.LoadbalancerBackendLatency.Record(ctx, duration.Milliseconds(), metric.WithAttributeSet(le.endpointAttr))
 	if err == nil {
-		e.telemetry.LoadbalancerBackendOutcome.Add(ctx, 1, metric.WithAttributeSet(le.successAttr))
+		e.telemetry.LoadbalancerBackendOutcome.Add(ctx, 1, metric.WithAttributeSet(attribute.NewSet(
+			attribute.String("endpoint", endpoint),
+			attribute.Bool("success", true),
+		)))
 	} else {
-		e.telemetry.LoadbalancerBackendOutcome.Add(ctx, 1, metric.WithAttributeSet(le.failureAttr))
+		e.telemetry.LoadbalancerBackendOutcome.Add(ctx, 1, metric.WithAttributeSet(attribute.NewSet(
+			attribute.String("endpoint", endpoint),
+			attribute.Bool("success", false),
+		)))
 		e.logger.Debug("failed to export log", zap.Error(err))
 	}
+	recordBackendOutcome(ctx, backendSignalTelemetry{
+		sent:   e.telemetry.LoadbalancerBackendSentLogRecords,
+		failed: e.telemetry.LoadbalancerBackendSendFailedLogRecords,
+	}, endpoint, int64(ld.LogRecordCount()), err)
 
 	return err
 }

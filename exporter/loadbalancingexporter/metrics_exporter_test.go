@@ -23,12 +23,20 @@ import (
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/exporter"
+	"go.opentelemetry.io/collector/exporter/exporterhelper"
+	"go.opentelemetry.io/collector/exporter/exportertest"
+	"go.opentelemetry.io/collector/exporter/otlpexporter"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest/pmetrictest"
 )
@@ -160,6 +168,115 @@ func TestMetricsExporterShutdown(t *testing.T) {
 
 	// verify
 	assert.NoError(t, res)
+}
+
+func TestConsumeMetricsEmitsPerBackendMetrics(t *testing.T) {
+	ctx := t.Context()
+	shutdownCtx := context.Background() //nolint:usetesting // Context must outlive test for cleanup
+	telemetry := componenttest.NewTelemetry()
+	t.Cleanup(func() {
+		require.NoError(t, telemetry.Shutdown(shutdownCtx))
+	})
+
+	parentParams := exportertest.NewNopSettings(metadata.Type)
+	parentParams.TelemetrySettings = telemetry.NewTelemetrySettings()
+
+	cfg := serviceBasedRoutingConfig()
+	metricsExporter, err := newMetricsExporter(parentParams, cfg)
+	require.NoError(t, err)
+
+	otlpFactory := otlpexporter.NewFactory()
+	metricsExporter.loadBalancer.componentFactory = func(createCtx context.Context, endpoint string) (component.Component, error) {
+		childCfg := buildExporterConfig(cfg, endpoint)
+		childParams := buildExporterSettings(otlpFactory.Type(), parentParams, endpoint)
+
+		return exporterhelper.NewMetrics(createCtx, childParams, &childCfg, func(context.Context, pmetric.Metrics) error {
+			return nil
+		})
+	}
+
+	wrappedExporter, err := exporterhelper.NewMetrics(
+		ctx,
+		parentParams,
+		cfg,
+		metricsExporter.ConsumeMetrics,
+		exporterhelper.WithStart(metricsExporter.Start),
+		exporterhelper.WithShutdown(metricsExporter.Shutdown),
+		exporterhelper.WithCapabilities(metricsExporter.Capabilities()),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, wrappedExporter.Start(ctx, componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, wrappedExporter.Shutdown(shutdownCtx))
+	})
+
+	md := metricWithSingleDataPoint()
+	require.NoError(t, wrappedExporter.ConsumeMetrics(ctx, md))
+
+	metric, err := telemetry.GetMetric("otelcol_loadbalancer_backend_sent_metric_points")
+	require.NoError(t, err)
+	sum, ok := metric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, sum.DataPoints, 1)
+	assert.Equal(t, int64(md.DataPointCount()), sum.DataPoints[0].Value)
+	assert.Equal(t, "endpoint-1:4317", getStringAttribute(t, sum.DataPoints[0].Attributes, "endpoint"))
+}
+
+func TestConsumeMetricsEmitsPerBackendFailedMetrics(t *testing.T) {
+	ctx := t.Context()
+	shutdownCtx := context.Background() //nolint:usetesting // Context must outlive test for cleanup
+	telemetry := componenttest.NewTelemetry()
+	t.Cleanup(func() {
+		require.NoError(t, telemetry.Shutdown(shutdownCtx))
+	})
+
+	parentParams := exportertest.NewNopSettings(metadata.Type)
+	parentParams.TelemetrySettings = telemetry.NewTelemetrySettings()
+
+	cfg := serviceBasedRoutingConfig()
+	metricsExporter, err := newMetricsExporter(parentParams, cfg)
+	require.NoError(t, err)
+
+	expectedErr := consumererror.NewPermanent(status.Error(codes.Unavailable, "backend unavailable"))
+	otlpFactory := otlpexporter.NewFactory()
+	metricsExporter.loadBalancer.componentFactory = func(createCtx context.Context, endpoint string) (component.Component, error) {
+		childCfg := buildExporterConfig(cfg, endpoint)
+		childParams := buildExporterSettings(otlpFactory.Type(), parentParams, endpoint)
+
+		return exporterhelper.NewMetrics(createCtx, childParams, &childCfg, func(context.Context, pmetric.Metrics) error {
+			return expectedErr
+		})
+	}
+
+	wrappedExporter, err := exporterhelper.NewMetrics(
+		ctx,
+		parentParams,
+		cfg,
+		metricsExporter.ConsumeMetrics,
+		exporterhelper.WithStart(metricsExporter.Start),
+		exporterhelper.WithShutdown(metricsExporter.Shutdown),
+		exporterhelper.WithCapabilities(metricsExporter.Capabilities()),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, wrappedExporter.Start(ctx, componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, wrappedExporter.Shutdown(shutdownCtx))
+	})
+
+	md := metricWithSingleDataPoint()
+	require.ErrorIs(t, wrappedExporter.ConsumeMetrics(ctx, md), expectedErr)
+
+	metric, err := telemetry.GetMetric("otelcol_loadbalancer_backend_send_failed_metric_points")
+	require.NoError(t, err)
+	sum, ok := metric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, sum.DataPoints, 1)
+	assert.Equal(t, int64(md.DataPointCount()), sum.DataPoints[0].Value)
+	assert.Equal(t, "endpoint-1:4317", getStringAttribute(t, sum.DataPoints[0].Attributes, "endpoint"))
+	assert.Equal(t, codes.Unavailable.String(), getStringAttribute(t, sum.DataPoints[0].Attributes, "error.type"))
+	assert.True(t, getBoolAttribute(t, sum.DataPoints[0].Attributes, errorPermanentKey))
 }
 
 // loadMetricsMap will parse the given yaml file into a map[string]pmetric.Metrics
@@ -1108,6 +1225,19 @@ func simpleMetricsWithServiceName() pmetric.Metrics {
 	rmetrics := metrics.ResourceMetrics().AppendEmpty()
 	rmetrics.Resource().Attributes().PutStr("service.name", serviceName1)
 	rmetrics.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty().SetName(signal1Name)
+	return metrics
+}
+
+func metricWithSingleDataPoint() pmetric.Metrics {
+	metrics := pmetric.NewMetrics()
+	rm := metrics.ResourceMetrics().AppendEmpty()
+	rm.Resource().Attributes().PutStr("service.name", serviceName1)
+	m := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+	m.SetName(signal1Name)
+	sum := m.SetEmptySum()
+	sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	sum.SetIsMonotonic(true)
+	sum.DataPoints().AppendEmpty().SetIntValue(1)
 	return metrics
 }
 

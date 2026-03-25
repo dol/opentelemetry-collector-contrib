@@ -135,6 +135,7 @@ func (e *traceExporterImp) ConsumeTraces(ctx context.Context, td ptrace.Traces) 
 		exp.consumeWG.Done()
 		errs = multierr.Append(errs, err)
 		duration := time.Since(start)
+		endpoint := endpoints[exp]
 		e.telemetry.LoadbalancerBackendLatency.Record(ctx, duration.Milliseconds(), metric.WithAttributeSet(exp.endpointAttr))
 		if err == nil {
 			e.telemetry.LoadbalancerBackendOutcome.Add(ctx, 1, metric.WithAttributeSet(exp.successAttr))
@@ -142,6 +143,10 @@ func (e *traceExporterImp) ConsumeTraces(ctx context.Context, td ptrace.Traces) 
 			e.telemetry.LoadbalancerBackendOutcome.Add(ctx, 1, metric.WithAttributeSet(exp.failureAttr))
 			e.logger.Debug("failed to export traces", zap.Error(err))
 		}
+		recordBackendOutcome(ctx, backendSignalTelemetry{
+			sent:   e.telemetry.LoadbalancerBackendSentSpans,
+			failed: e.telemetry.LoadbalancerBackendSendFailedSpans,
+		}, endpoint, int64(td.SpanCount()), err)
 	}
 
 	return errs

@@ -20,11 +20,20 @@ import (
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/exporter"
+	"go.opentelemetry.io/collector/exporter/exporterhelper"
 	"go.opentelemetry.io/collector/exporter/exportertest"
+	"go.opentelemetry.io/collector/exporter/otlpexporter"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/otel/attribute"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter/internal/metadata"
 )
@@ -151,6 +160,140 @@ func TestConsumeTraces(t *testing.T) {
 
 	// verify
 	assert.NoError(t, res)
+}
+
+func TestLoadBalancingExporterTraceTelemetry(t *testing.T) {
+	ctx := t.Context()
+	shutdownCtx := context.Background() //nolint:usetesting // Context must outlive test for cleanup
+	cfg := simpleConfig()
+	otlpFactory := otlpexporter.NewFactory()
+	telemetry := componenttest.NewTelemetry()
+	t.Cleanup(func() {
+		require.NoError(t, telemetry.Shutdown(shutdownCtx))
+	})
+
+	parentParams := exportertest.NewNopSettings(metadata.Type)
+	parentParams.ID = component.NewIDWithName(metadata.Type, "gateway-spans")
+	parentParams.TelemetrySettings = telemetry.NewTelemetrySettings()
+
+	tracesExporter, err := newTracesExporter(parentParams, cfg)
+	require.NoError(t, err)
+
+	var childSettings []exporter.Settings
+	tracesExporter.loadBalancer.componentFactory = func(createCtx context.Context, endpoint string) (component.Component, error) {
+		childCfg := buildExporterConfig(cfg, endpoint)
+		childParams := buildExporterSettings(otlpFactory.Type(), parentParams, endpoint)
+		childSettings = append(childSettings, childParams)
+
+		return exporterhelper.NewTraces(createCtx, childParams, &childCfg, func(context.Context, ptrace.Traces) error {
+			return nil
+		})
+	}
+
+	wrappedExporter, err := exporterhelper.NewTraces(
+		ctx,
+		parentParams,
+		cfg,
+		tracesExporter.ConsumeTraces,
+		exporterhelper.WithStart(tracesExporter.Start),
+		exporterhelper.WithShutdown(tracesExporter.Shutdown),
+		exporterhelper.WithCapabilities(tracesExporter.Capabilities()),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, wrappedExporter.Start(ctx, componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, wrappedExporter.Shutdown(shutdownCtx))
+	})
+
+	td := simpleTraces()
+	require.NoError(t, wrappedExporter.ConsumeTraces(ctx, td))
+
+	exporterMetric, err := telemetry.GetMetric("otelcol_exporter_sent_spans")
+	require.NoError(t, err)
+	exporterSum, ok := exporterMetric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, exporterSum.DataPoints, 1)
+	assert.Equal(t, int64(td.SpanCount()), exporterSum.DataPoints[0].Value)
+	assert.Equal(t, parentParams.ID.String(), getStringAttribute(t, exporterSum.DataPoints[0].Attributes, "exporter"))
+
+	backendMetric, err := telemetry.GetMetric("otelcol_loadbalancer_backend_sent_spans")
+	require.NoError(t, err)
+	backendSum, ok := backendMetric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, backendSum.DataPoints, 1)
+	assert.Equal(t, int64(td.SpanCount()), backendSum.DataPoints[0].Value)
+	assert.Equal(t, "endpoint-1:4317", getStringAttribute(t, backendSum.DataPoints[0].Attributes, "endpoint"))
+
+	outcomeMetric, err := telemetry.GetMetric("otelcol_loadbalancer_backend_outcome")
+	require.NoError(t, err)
+	outcomeSum, ok := outcomeMetric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, outcomeSum.DataPoints, 1)
+	assert.Equal(t, int64(1), outcomeSum.DataPoints[0].Value)
+	assert.Equal(t, "endpoint-1:4317", getStringAttribute(t, outcomeSum.DataPoints[0].Attributes, "endpoint"))
+	assert.True(t, getBoolAttribute(t, outcomeSum.DataPoints[0].Attributes, "success"))
+
+	require.Len(t, childSettings, 1)
+	assert.IsType(t, metricnoop.NewMeterProvider(), childSettings[0].MeterProvider)
+	assert.IsType(t, tracenoop.NewTracerProvider(), childSettings[0].TracerProvider)
+}
+
+func TestLoadBalancingExporterTraceFailureTelemetry(t *testing.T) {
+	ctx := t.Context()
+	shutdownCtx := context.Background() //nolint:usetesting // Context must outlive test for cleanup
+	cfg := simpleConfig()
+	otlpFactory := otlpexporter.NewFactory()
+	telemetry := componenttest.NewTelemetry()
+	t.Cleanup(func() {
+		require.NoError(t, telemetry.Shutdown(shutdownCtx))
+	})
+
+	parentParams := exportertest.NewNopSettings(metadata.Type)
+	parentParams.ID = component.NewIDWithName(metadata.Type, "gateway-spans")
+	parentParams.TelemetrySettings = telemetry.NewTelemetrySettings()
+
+	tracesExporter, err := newTracesExporter(parentParams, cfg)
+	require.NoError(t, err)
+
+	expectedErr := consumererror.NewPermanent(status.Error(codes.Unavailable, "backend unavailable"))
+	tracesExporter.loadBalancer.componentFactory = func(createCtx context.Context, endpoint string) (component.Component, error) {
+		childCfg := buildExporterConfig(cfg, endpoint)
+		childParams := buildExporterSettings(otlpFactory.Type(), parentParams, endpoint)
+
+		return exporterhelper.NewTraces(createCtx, childParams, &childCfg, func(context.Context, ptrace.Traces) error {
+			return expectedErr
+		})
+	}
+
+	wrappedExporter, err := exporterhelper.NewTraces(
+		ctx,
+		parentParams,
+		cfg,
+		tracesExporter.ConsumeTraces,
+		exporterhelper.WithStart(tracesExporter.Start),
+		exporterhelper.WithShutdown(tracesExporter.Shutdown),
+		exporterhelper.WithCapabilities(tracesExporter.Capabilities()),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, wrappedExporter.Start(ctx, componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, wrappedExporter.Shutdown(shutdownCtx))
+	})
+
+	td := simpleTraces()
+	require.ErrorIs(t, wrappedExporter.ConsumeTraces(ctx, td), expectedErr)
+
+	backendMetric, err := telemetry.GetMetric("otelcol_loadbalancer_backend_send_failed_spans")
+	require.NoError(t, err)
+	backendSum, ok := backendMetric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, backendSum.DataPoints, 1)
+	assert.Equal(t, int64(td.SpanCount()), backendSum.DataPoints[0].Value)
+	assert.Equal(t, "endpoint-1:4317", getStringAttribute(t, backendSum.DataPoints[0].Attributes, "endpoint"))
+	assert.Equal(t, codes.Unavailable.String(), getStringAttribute(t, backendSum.DataPoints[0].Attributes, "error.type"))
+	assert.True(t, getBoolAttribute(t, backendSum.DataPoints[0].Attributes, errorPermanentKey))
 }
 
 // This test validates that exporter is can concurrently change the endpoints while consuming traces.
@@ -855,6 +998,22 @@ func twoServicesWithSameTraceID() ptrace.Traces {
 
 func appendSimpleTraceWithID(dest ptrace.ResourceSpans, id pcommon.TraceID) {
 	dest.ScopeSpans().AppendEmpty().Spans().AppendEmpty().SetTraceID(id)
+}
+
+func getStringAttribute(t *testing.T, set attribute.Set, key string) string {
+	t.Helper()
+
+	value, found := set.Value(attribute.Key(key))
+	require.Truef(t, found, "attribute %q must be present", key)
+	return value.AsString()
+}
+
+func getBoolAttribute(t *testing.T, set attribute.Set, key string) bool {
+	t.Helper()
+
+	value, found := set.Value(attribute.Key(key))
+	require.Truef(t, found, "attribute %q must be present", key)
+	return value.AsBool()
 }
 
 func simpleConfig() *Config {

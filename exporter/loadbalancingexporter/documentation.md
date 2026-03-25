@@ -32,7 +32,98 @@ Number of successes and failures for each endpoint.
 
 | Name | Description | Values |
 | ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
 | success | Whether an outcome was successful | Any Bool |
+
+### otelcol_loadbalancer_backend_send_failed_log_records
+
+Number of log records in failed attempts to send to each backend.
+
+| Unit | Metric Type | Value Type | Monotonic | Stability |
+| ---- | ----------- | ---------- | --------- | --------- |
+| {record} | Sum | Int | true | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
+| error.type | Describes a class of error the operation ended with. | Any Str |
+| error.permanent | Whether the error is permanent. | Any Bool |
+
+### otelcol_loadbalancer_backend_send_failed_metric_points
+
+Number of metric points in failed attempts to send to each backend.
+
+| Unit | Metric Type | Value Type | Monotonic | Stability |
+| ---- | ----------- | ---------- | --------- | --------- |
+| {datapoint} | Sum | Int | true | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
+| error.type | Describes a class of error the operation ended with. | Any Str |
+| error.permanent | Whether the error is permanent. | Any Bool |
+
+### otelcol_loadbalancer_backend_send_failed_spans
+
+Number of spans in failed attempts to send to each backend.
+
+| Unit | Metric Type | Value Type | Monotonic | Stability |
+| ---- | ----------- | ---------- | --------- | --------- |
+| {span} | Sum | Int | true | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
+| error.type | Describes a class of error the operation ended with. | Any Str |
+| error.permanent | Whether the error is permanent. | Any Bool |
+
+### otelcol_loadbalancer_backend_sent_log_records
+
+Number of log records successfully sent to each backend.
+
+| Unit | Metric Type | Value Type | Monotonic | Stability |
+| ---- | ----------- | ---------- | --------- | --------- |
+| {record} | Sum | Int | true | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
+
+### otelcol_loadbalancer_backend_sent_metric_points
+
+Number of metric points successfully sent to each backend.
+
+| Unit | Metric Type | Value Type | Monotonic | Stability |
+| ---- | ----------- | ---------- | --------- | --------- |
+| {datapoint} | Sum | Int | true | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
+
+### otelcol_loadbalancer_backend_sent_spans
+
+Number of spans successfully sent to each backend.
+
+| Unit | Metric Type | Value Type | Monotonic | Stability |
+| ---- | ----------- | ---------- | --------- | --------- |
+| {span} | Sum | Int | true | Development |
+
+#### Attributes
+
+| Name | Description | Values |
+| ---- | ----------- | ------ |
+| endpoint | The endpoint of the backend | Any Str |
 
 ### otelcol_loadbalancer_num_backend_updates
 

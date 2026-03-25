@@ -7,11 +7,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter/internal/metadata"
+	"go.opentelemetry.io/collector/component/componenttest"
 )
 
 func TestSetupTelemetry(t *testing.T) {
@@ -21,6 +21,12 @@ func TestSetupTelemetry(t *testing.T) {
 	defer tb.Shutdown()
 	tb.LoadbalancerBackendLatency.Record(context.Background(), 1)
 	tb.LoadbalancerBackendOutcome.Add(context.Background(), 1)
+	tb.LoadbalancerBackendSendFailedLogRecords.Add(context.Background(), 1)
+	tb.LoadbalancerBackendSendFailedMetricPoints.Add(context.Background(), 1)
+	tb.LoadbalancerBackendSendFailedSpans.Add(context.Background(), 1)
+	tb.LoadbalancerBackendSentLogRecords.Add(context.Background(), 1)
+	tb.LoadbalancerBackendSentMetricPoints.Add(context.Background(), 1)
+	tb.LoadbalancerBackendSentSpans.Add(context.Background(), 1)
 	tb.LoadbalancerNumBackendUpdates.Add(context.Background(), 1)
 	tb.LoadbalancerNumBackends.Record(context.Background(), 1)
 	tb.LoadbalancerNumResolutions.Add(context.Background(), 1)
@@ -28,6 +34,24 @@ func TestSetupTelemetry(t *testing.T) {
 		[]metricdata.HistogramDataPoint[int64]{{}}, metricdatatest.IgnoreValue(),
 		metricdatatest.IgnoreTimestamp())
 	AssertEqualLoadbalancerBackendOutcome(t, testTel,
+		[]metricdata.DataPoint[int64]{{Value: 1}},
+		metricdatatest.IgnoreTimestamp())
+	AssertEqualLoadbalancerBackendSendFailedLogRecords(t, testTel,
+		[]metricdata.DataPoint[int64]{{Value: 1}},
+		metricdatatest.IgnoreTimestamp())
+	AssertEqualLoadbalancerBackendSendFailedMetricPoints(t, testTel,
+		[]metricdata.DataPoint[int64]{{Value: 1}},
+		metricdatatest.IgnoreTimestamp())
+	AssertEqualLoadbalancerBackendSendFailedSpans(t, testTel,
+		[]metricdata.DataPoint[int64]{{Value: 1}},
+		metricdatatest.IgnoreTimestamp())
+	AssertEqualLoadbalancerBackendSentLogRecords(t, testTel,
+		[]metricdata.DataPoint[int64]{{Value: 1}},
+		metricdatatest.IgnoreTimestamp())
+	AssertEqualLoadbalancerBackendSentMetricPoints(t, testTel,
+		[]metricdata.DataPoint[int64]{{Value: 1}},
+		metricdatatest.IgnoreTimestamp())
+	AssertEqualLoadbalancerBackendSentSpans(t, testTel,
 		[]metricdata.DataPoint[int64]{{Value: 1}},
 		metricdatatest.IgnoreTimestamp())
 	AssertEqualLoadbalancerNumBackendUpdates(t, testTel,

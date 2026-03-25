@@ -6,9 +6,10 @@ import (
 	"errors"
 	"sync"
 
-	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+
+	"go.opentelemetry.io/collector/component"
 )
 
 func Meter(settings component.TelemetrySettings) metric.Meter {
@@ -22,14 +23,20 @@ func Tracer(settings component.TelemetrySettings) trace.Tracer {
 // TelemetryBuilder provides an interface for components to report telemetry
 // as defined in metadata and user config.
 type TelemetryBuilder struct {
-	meter                         metric.Meter
-	mu                            sync.Mutex
-	registrations                 []metric.Registration
-	LoadbalancerBackendLatency    metric.Int64Histogram
-	LoadbalancerBackendOutcome    metric.Int64Counter
-	LoadbalancerNumBackendUpdates metric.Int64Counter
-	LoadbalancerNumBackends       metric.Int64Gauge
-	LoadbalancerNumResolutions    metric.Int64Counter
+	meter                                     metric.Meter
+	mu                                        sync.Mutex
+	registrations                             []metric.Registration
+	LoadbalancerBackendLatency                metric.Int64Histogram
+	LoadbalancerBackendOutcome                metric.Int64Counter
+	LoadbalancerBackendSendFailedLogRecords   metric.Int64Counter
+	LoadbalancerBackendSendFailedMetricPoints metric.Int64Counter
+	LoadbalancerBackendSendFailedSpans        metric.Int64Counter
+	LoadbalancerBackendSentLogRecords         metric.Int64Counter
+	LoadbalancerBackendSentMetricPoints       metric.Int64Counter
+	LoadbalancerBackendSentSpans              metric.Int64Counter
+	LoadbalancerNumBackendUpdates             metric.Int64Counter
+	LoadbalancerNumBackends                   metric.Int64Gauge
+	LoadbalancerNumResolutions                metric.Int64Counter
 }
 
 // TelemetryBuilderOption applies changes to default builder.
@@ -72,6 +79,42 @@ func NewTelemetryBuilder(settings component.TelemetrySettings, options ...Teleme
 		"otelcol_loadbalancer_backend_outcome",
 		metric.WithDescription("Number of successes and failures for each endpoint. [Development]"),
 		metric.WithUnit("{outcomes}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendSendFailedLogRecords, err = builder.meter.Int64Counter(
+		"otelcol_loadbalancer_backend_send_failed_log_records",
+		metric.WithDescription("Number of log records in failed attempts to send to each backend. [Development]"),
+		metric.WithUnit("{record}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendSendFailedMetricPoints, err = builder.meter.Int64Counter(
+		"otelcol_loadbalancer_backend_send_failed_metric_points",
+		metric.WithDescription("Number of metric points in failed attempts to send to each backend. [Development]"),
+		metric.WithUnit("{datapoint}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendSendFailedSpans, err = builder.meter.Int64Counter(
+		"otelcol_loadbalancer_backend_send_failed_spans",
+		metric.WithDescription("Number of spans in failed attempts to send to each backend. [Development]"),
+		metric.WithUnit("{span}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendSentLogRecords, err = builder.meter.Int64Counter(
+		"otelcol_loadbalancer_backend_sent_log_records",
+		metric.WithDescription("Number of log records successfully sent to each backend. [Development]"),
+		metric.WithUnit("{record}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendSentMetricPoints, err = builder.meter.Int64Counter(
+		"otelcol_loadbalancer_backend_sent_metric_points",
+		metric.WithDescription("Number of metric points successfully sent to each backend. [Development]"),
+		metric.WithUnit("{datapoint}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.LoadbalancerBackendSentSpans, err = builder.meter.Int64Counter(
+		"otelcol_loadbalancer_backend_sent_spans",
+		metric.WithDescription("Number of spans successfully sent to each backend. [Development]"),
+		metric.WithUnit("{span}"),
 	)
 	errs = errors.Join(errs, err)
 	builder.LoadbalancerNumBackendUpdates, err = builder.meter.Int64Counter(

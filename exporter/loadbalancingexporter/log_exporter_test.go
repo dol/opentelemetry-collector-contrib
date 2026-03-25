@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
@@ -31,6 +32,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter/internal/metadata"
 )
@@ -200,7 +203,7 @@ func TestConsumeLogsEmitsOnlyParentExporterMetrics(t *testing.T) {
 
 	require.NoError(t, wrappedExporter.Start(ctx, componenttest.NewNopHost()))
 	t.Cleanup(func() {
-		require.NoError(t, wrappedExporter.Shutdown(ctx))
+		require.NoError(t, wrappedExporter.Shutdown(shutdownCtx))
 	})
 
 	logs := generateSingleLogRecord()
@@ -238,6 +241,115 @@ func TestConsumeLogsEmitsOnlyParentExporterMetrics(t *testing.T) {
 	require.Len(t, childSettings, 1)
 	assert.IsType(t, metricnoop.NewMeterProvider(), childSettings[0].MeterProvider)
 	assert.IsType(t, tracenoop.NewTracerProvider(), childSettings[0].TracerProvider)
+}
+
+func TestConsumeLogsEmitsPerBackendMetrics(t *testing.T) {
+	ctx := t.Context()
+	shutdownCtx := context.Background() //nolint:usetesting // Context must outlive test for cleanup
+	telemetry := componenttest.NewTelemetry()
+	t.Cleanup(func() {
+		require.NoError(t, telemetry.Shutdown(shutdownCtx))
+	})
+
+	parentParams := exportertest.NewNopSettings(metadata.Type)
+	parentParams.TelemetrySettings = telemetry.NewTelemetrySettings()
+
+	cfg := simpleConfig()
+	logsExporter, err := newLogsExporter(parentParams, cfg)
+	require.NoError(t, err)
+
+	otlpFactory := otlpexporter.NewFactory()
+	logsExporter.loadBalancer.componentFactory = func(createCtx context.Context, endpoint string) (component.Component, error) {
+		childCfg := buildExporterConfig(cfg, endpoint)
+		childParams := buildExporterSettings(otlpFactory.Type(), parentParams, endpoint)
+
+		return exporterhelper.NewLogs(createCtx, childParams, &childCfg, func(context.Context, plog.Logs) error {
+			return nil
+		})
+	}
+
+	wrappedExporter, err := exporterhelper.NewLogs(
+		ctx,
+		parentParams,
+		cfg,
+		logsExporter.ConsumeLogs,
+		exporterhelper.WithStart(logsExporter.Start),
+		exporterhelper.WithShutdown(logsExporter.Shutdown),
+		exporterhelper.WithCapabilities(logsExporter.Capabilities()),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, wrappedExporter.Start(ctx, componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, wrappedExporter.Shutdown(shutdownCtx))
+	})
+
+	logs := generateSingleLogRecord()
+	require.NoError(t, wrappedExporter.ConsumeLogs(ctx, logs))
+
+	metric, err := telemetry.GetMetric("otelcol_loadbalancer_backend_sent_log_records")
+	require.NoError(t, err)
+	sum, ok := metric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, sum.DataPoints, 1)
+	assert.Equal(t, int64(logs.LogRecordCount()), sum.DataPoints[0].Value)
+	assert.Equal(t, "endpoint-1:4317", getStringAttribute(t, sum.DataPoints[0].Attributes, "endpoint"))
+}
+
+func TestConsumeLogsEmitsPerBackendFailedMetrics(t *testing.T) {
+	ctx := t.Context()
+	shutdownCtx := context.Background() //nolint:usetesting // Context must outlive test for cleanup
+	telemetry := componenttest.NewTelemetry()
+	t.Cleanup(func() {
+		require.NoError(t, telemetry.Shutdown(shutdownCtx))
+	})
+
+	parentParams := exportertest.NewNopSettings(metadata.Type)
+	parentParams.TelemetrySettings = telemetry.NewTelemetrySettings()
+
+	cfg := simpleConfig()
+	logsExporter, err := newLogsExporter(parentParams, cfg)
+	require.NoError(t, err)
+
+	expectedErr := consumererror.NewPermanent(status.Error(codes.Unavailable, "backend unavailable"))
+	otlpFactory := otlpexporter.NewFactory()
+	logsExporter.loadBalancer.componentFactory = func(createCtx context.Context, endpoint string) (component.Component, error) {
+		childCfg := buildExporterConfig(cfg, endpoint)
+		childParams := buildExporterSettings(otlpFactory.Type(), parentParams, endpoint)
+
+		return exporterhelper.NewLogs(createCtx, childParams, &childCfg, func(context.Context, plog.Logs) error {
+			return expectedErr
+		})
+	}
+
+	wrappedExporter, err := exporterhelper.NewLogs(
+		ctx,
+		parentParams,
+		cfg,
+		logsExporter.ConsumeLogs,
+		exporterhelper.WithStart(logsExporter.Start),
+		exporterhelper.WithShutdown(logsExporter.Shutdown),
+		exporterhelper.WithCapabilities(logsExporter.Capabilities()),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, wrappedExporter.Start(ctx, componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, wrappedExporter.Shutdown(shutdownCtx))
+	})
+
+	logs := generateSingleLogRecord()
+	require.ErrorIs(t, wrappedExporter.ConsumeLogs(ctx, logs), expectedErr)
+
+	metric, err := telemetry.GetMetric("otelcol_loadbalancer_backend_send_failed_log_records")
+	require.NoError(t, err)
+	sum, ok := metric.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, sum.DataPoints, 1)
+	assert.Equal(t, int64(logs.LogRecordCount()), sum.DataPoints[0].Value)
+	assert.Equal(t, "endpoint-1:4317", getStringAttribute(t, sum.DataPoints[0].Attributes, "endpoint"))
+	assert.Equal(t, codes.Unavailable.String(), getStringAttribute(t, sum.DataPoints[0].Attributes, "error.type"))
+	assert.True(t, getBoolAttribute(t, sum.DataPoints[0].Attributes, errorPermanentKey))
 }
 
 func generateSingleLogRecord() plog.Logs {
