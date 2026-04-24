@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 	"go.opentelemetry.io/collector/confmap/xconfmap"
 	"go.opentelemetry.io/collector/scraper/scraperhelper"
@@ -212,4 +213,40 @@ func TestLoadInvalidConfig_InvalidScraperKey(t *testing.T) {
 	require.NoError(t, err)
 
 	require.ErrorContains(t, cm.Unmarshal(cfg), "invalid scraper key: invalidscraperkey")
+}
+
+func TestConfigMarshalPreservesScrapers(t *testing.T) {
+	t.Parallel()
+
+	raw := confmap.NewFromStringMap(map[string]any{
+		"collection_interval": "15s",
+		"root_path":           "/hostfs",
+		"scrapers": map[string]any{
+			"cpu": map[string]any{
+				"metrics": map[string]any{
+					"system.cpu.utilization": map[string]any{"enabled": true},
+				},
+			},
+			"memory": map[string]any{},
+		},
+	})
+
+	cfg := NewFactory().CreateDefaultConfig()
+	require.NoError(t, raw.Unmarshal(cfg))
+
+	wrapper := struct {
+		Component *Config `mapstructure:"component"`
+	}{
+		Component: cfg.(*Config),
+	}
+	out := confmap.New()
+	require.NoError(t, out.Marshal(wrapper))
+
+	outMap, err := out.Sub("component")
+	require.NoError(t, err)
+	scrapers := outMap.ToStringMap()["scrapers"].(map[string]any)
+	require.Contains(t, scrapers, "cpu")
+	require.Contains(t, scrapers, "memory")
+	require.Equal(t, true, scrapers["cpu"].(map[string]any)["metrics"].(map[string]any)["system.cpu.utilization"].(map[string]any)["enabled"])
+	require.Equal(t, "/hostfs", outMap.ToStringMap()["root_path"])
 }

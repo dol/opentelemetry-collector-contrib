@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 	"go.opentelemetry.io/collector/confmap/xconfmap"
 	"go.opentelemetry.io/collector/otelcol/otelcoltest"
@@ -171,4 +172,35 @@ func TestLoadConfig_ProviderValidateError(t *testing.T) {
 	_, err = otelcoltest.LoadConfigAndValidate(filepath.Join("testdata", "config-mockProvider.yaml"), factories)
 
 	require.ErrorContains(t, err, "error validating provider mock")
+}
+
+func TestConfigMarshalPreservesProviders(t *testing.T) {
+	t.Parallel()
+
+	raw := confmap.NewFromStringMap(map[string]any{
+		"providers": map[string]any{
+			"maxmind": map[string]any{
+				"database_path": "/tmp/mygeodb",
+			},
+		},
+		"context":    "record",
+		"attributes": []any{"client.address", "source.address", "custom.address"},
+	})
+
+	cfg := NewFactory().CreateDefaultConfig()
+	require.NoError(t, raw.Unmarshal(cfg))
+
+	wrapper := struct {
+		Component *Config `mapstructure:"component"`
+	}{
+		Component: cfg.(*Config),
+	}
+	out := confmap.New()
+	require.NoError(t, out.Marshal(wrapper))
+
+	outMap, err := out.Sub("component")
+	require.NoError(t, err)
+	assert.Equal(t, raw.ToStringMap()["providers"], outMap.ToStringMap()["providers"])
+	assert.Equal(t, ContextID("record"), outMap.ToStringMap()["context"])
+	assert.Equal(t, []any{attribute.Key("client.address"), attribute.Key("source.address"), attribute.Key("custom.address")}, outMap.ToStringMap()["attributes"])
 }

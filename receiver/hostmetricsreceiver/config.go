@@ -36,6 +36,7 @@ type Config struct {
 var (
 	_ xconfmap.Validator  = (*Config)(nil)
 	_ confmap.Unmarshaler = (*Config)(nil)
+	_ confmap.Marshaler   = (*Config)(nil)
 )
 
 // Validate checks the receiver configuration is valid
@@ -94,4 +95,37 @@ func (cfg *Config) Unmarshal(componentParser *confmap.Conf) error {
 	}
 
 	return nil
+}
+
+func (cfg Config) Marshal(component *confmap.Conf) error {
+	base := struct {
+		scraperhelper.ControllerConfig `mapstructure:",squash"`
+		RootPath                       string        `mapstructure:"root_path"`
+		MetadataCollectionInterval     time.Duration `mapstructure:"metadata_collection_interval"`
+	}{
+		ControllerConfig:           cfg.ControllerConfig,
+		RootPath:                   cfg.RootPath,
+		MetadataCollectionInterval: cfg.MetadataCollectionInterval,
+	}
+
+	if err := component.Marshal(base); err != nil {
+		return err
+	}
+
+	if len(cfg.Scrapers) == 0 {
+		return nil
+	}
+
+	scrapers := make(map[string]any, len(cfg.Scrapers))
+	for key, scraperCfg := range cfg.Scrapers {
+		scraperConf := confmap.New()
+		if err := scraperConf.Marshal(scraperCfg); err != nil {
+			return err
+		}
+		scrapers[key.String()] = scraperConf.ToStringMap()
+	}
+
+	return component.Merge(confmap.NewFromStringMap(map[string]any{
+		"scrapers": scrapers,
+	}))
 }

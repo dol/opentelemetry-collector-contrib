@@ -52,6 +52,7 @@ type Config struct {
 var (
 	_ component.Config    = (*Config)(nil)
 	_ confmap.Unmarshaler = (*Config)(nil)
+	_ confmap.Marshaler   = (*Config)(nil)
 )
 
 func (cfg *Config) Validate() error {
@@ -115,4 +116,35 @@ func (cfg *Config) Unmarshal(componentParser *confmap.Conf) error {
 	}
 
 	return nil
+}
+
+func (cfg Config) Marshal(component *confmap.Conf) error {
+	base := struct {
+		Context    ContextID       `mapstructure:"context"`
+		Attributes []attribute.Key `mapstructure:"attributes"`
+	}{
+		Context:    cfg.Context,
+		Attributes: cfg.Attributes,
+	}
+
+	if err := component.Marshal(base); err != nil {
+		return err
+	}
+
+	if len(cfg.Providers) == 0 {
+		return nil
+	}
+
+	providers := make(map[string]any, len(cfg.Providers))
+	for key, providerCfg := range cfg.Providers {
+		providerConf := confmap.New()
+		if err := providerConf.Marshal(providerCfg); err != nil {
+			return err
+		}
+		providers[key] = providerConf.ToStringMap()
+	}
+
+	return component.Merge(confmap.NewFromStringMap(map[string]any{
+		providersKey: providers,
+	}))
 }

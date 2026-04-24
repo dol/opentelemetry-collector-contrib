@@ -78,6 +78,7 @@ func newReceiverTemplate(name string, cfg userConfigMap) (receiverTemplate, erro
 }
 
 var _ confmap.Unmarshaler = (*Config)(nil)
+var _ confmap.Marshaler = (*Config)(nil)
 
 // Config defines configuration for receiver_creator.
 type Config struct {
@@ -150,4 +151,40 @@ func (cfg *Config) Unmarshal(componentParser *confmap.Conf) error {
 	}
 
 	return nil
+}
+
+func (cfg Config) Marshal(conf *confmap.Conf) error {
+	base := struct {
+		WatchObservers     []component.ID     `mapstructure:"watch_observers"`
+		ResourceAttributes resourceAttributes `mapstructure:"resource_attributes"`
+		Discovery          DiscoveryConfig    `mapstructure:"discovery"`
+	}{
+		WatchObservers:     cfg.WatchObservers,
+		ResourceAttributes: cfg.ResourceAttributes,
+		Discovery:          cfg.Discovery,
+	}
+
+	if err := conf.Marshal(base); err != nil {
+		return err
+	}
+
+	if len(cfg.receiverTemplates) == 0 {
+		return nil
+	}
+
+	receivers := make(map[string]any, len(cfg.receiverTemplates))
+	for key, template := range cfg.receiverTemplates {
+		entry := map[string]any{
+			"rule":   template.Rule,
+			"config": map[string]any(template.config),
+		}
+		if len(template.ResourceAttributes) > 0 {
+			entry["resource_attributes"] = template.ResourceAttributes
+		}
+		receivers[key] = entry
+	}
+
+	return conf.Merge(confmap.NewFromStringMap(map[string]any{
+		receiversConfigKey: receivers,
+	}))
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 	"go.opentelemetry.io/collector/confmap/xconfmap"
 	"go.opentelemetry.io/collector/consumer"
@@ -167,6 +168,54 @@ func TestInvalidReceiverResourceAttributeValueType(t *testing.T) {
 	cfg, err := otelcoltest.LoadConfigAndValidate(filepath.Join("testdata", "invalid-receiver-resource-attributes.yaml"), factories)
 	require.ErrorContains(t, err, "unsupported `resource_attributes` \"one\" value <nil> in examplereceiver/1")
 	require.Nil(t, cfg)
+}
+
+func TestConfigMarshalPreservesReceivers(t *testing.T) {
+	t.Parallel()
+
+	raw := confmap.NewFromStringMap(map[string]any{
+		"watch_observers": []any{"mock_observer"},
+		"receivers": map[string]any{
+			"nop/1": map[string]any{
+				"rule": `type == "port"`,
+				"config": map[string]any{
+					"endpoint": "localhost:12345",
+				},
+				"resource_attributes": map[string]any{
+					"two": "three",
+				},
+			},
+		},
+		"resource_attributes": map[string]any{
+			"port": map[string]any{
+				"port.key": "port.value",
+			},
+		},
+	})
+
+	cfg := NewFactory().CreateDefaultConfig()
+	require.NoError(t, raw.Unmarshal(cfg))
+
+	wrapper := struct {
+		Component *Config `mapstructure:"component"`
+	}{
+		Component: cfg.(*Config),
+	}
+	out := confmap.New()
+	require.NoError(t, out.Marshal(wrapper))
+
+	outMap, err := out.Sub("component")
+	require.NoError(t, err)
+	outStringMap := outMap.ToStringMap()
+	assert.Equal(t, raw.ToStringMap()["receivers"], outStringMap["receivers"])
+	assert.Equal(t, []any{"mock_observer"}, outStringMap["watch_observers"])
+	assert.Equal(t, map[string]any{
+		"port": map[string]any{
+			"port.key": "port.value",
+		},
+	}, map[string]any{
+		"port": outStringMap["resource_attributes"].(map[string]any)["port"],
+	})
 }
 
 type nopWithEndpointConfig struct {
