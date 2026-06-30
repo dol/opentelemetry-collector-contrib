@@ -1,0 +1,9 @@
+$defs:
+  config:
+    description: Config contains the information necessary for configuring the local metadata HTTP server.
+    type: object
+    properties:
+      path:
+        type: string
+    allOf:
+      - $ref: go.opentelemetry.io/collector/config/confighttp.server_config

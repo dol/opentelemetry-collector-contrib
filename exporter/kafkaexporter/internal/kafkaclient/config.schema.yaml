@@ -1,0 +1,9 @@
+$defs:
+  record_header:
+    description: RecordHeader includes key-value pairs to be added as headers to Kafka records.
+    type: object
+    properties:
+      name:
+        type: string
+      value:
+        $ref: go.opentelemetry.io/collector/config/configopaque.string

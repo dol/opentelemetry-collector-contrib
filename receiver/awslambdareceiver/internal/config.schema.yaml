@@ -1,0 +1,11 @@
+$defs:
+  aws_options:
+    description: AWSOptions holds configuration overrides for AWS SDK when accessing S3 data.
+    type: object
+    properties:
+      access_key_id:
+        type: string
+      secret_access_key:
+        $ref: go.opentelemetry.io/collector/config/configopaque.string
+      session_token:
+        $ref: go.opentelemetry.io/collector/config/configopaque.string

@@ -1,0 +1,8 @@
+$defs:
+  config:
+    description: Config defines configuration for MaxMind provider.
+    type: object
+    properties:
+      database_path:
+        description: DatabasePath section allows specifying a local GeoIP database file to retrieve the geographical metadata from.
+        type: string

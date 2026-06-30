@@ -1,0 +1,63 @@
+$defs:
+  check_collector_pipeline_config:
+    description: CheckCollectorPipelineConfig is legacy config that is currently ignored as the `check_collector_pipeline` feature in the original healthcheck extension was not working as expected. This is here for backwards compatibility.
+    type: object
+    properties:
+      enabled:
+        description: Enabled indicates whether to not enable collector pipeline check.
+        type: boolean
+      exporter_failure_threshold:
+        description: ExporterFailureThreshold is the threshold of exporter failure numbers during the Interval
+        type: integer
+      interval:
+        description: Interval the time range to check healthy status of collector pipeline
+        type: string
+  config:
+    description: Config contains the v2 config for the http healthcheck service
+    type: object
+    properties:
+      config:
+        $ref: path_config
+      status:
+        $ref: path_config
+    allOf:
+      - $ref: go.opentelemetry.io/collector/config/confighttp.server_config
+  legacy_config:
+    description: LegacyConfig contains the config for the original healthcheck extension. We plan to migrate incrementally towards the v2 config and behavior. LegacyConfig is intentionally handled separately here and elsewhere to facilitate its eventual removal.
+    type: object
+    properties:
+      check_collector_pipeline:
+        description: CheckCollectorPipeline contains the config for collector pipeline health checks. It is retained for backwards compatibility, but is otherwise ignored.
+        x-pointer: true
+        $ref: check_collector_pipeline_config
+      path:
+        description: Path represents the path the health check service will serve. The default path is "/".
+        type: string
+      response_body:
+        description: ResponseBody represents the body of the response returned by the health check service. This overrides the default response that it would return.
+        x-pointer: true
+        $ref: response_body_config
+      use_v2:
+        description: UseV2 is an explicit opt-in to v2 behavior. When true, LegacyConfig will be ignored.
+        type: boolean
+    allOf:
+      - $ref: go.opentelemetry.io/collector/config/confighttp.server_config
+  path_config:
+    type: object
+    properties:
+      enabled:
+        type: boolean
+      include_attributes:
+        type: boolean
+      path:
+        type: string
+  response_body_config:
+    description: ResponseBodyConfig is legacy config that is currently supported, but can eventually be deprecated and removed.
+    type: object
+    properties:
+      healthy:
+        description: Healthy represents the body of the response returned when the collector is healthy. The default value is ""
+        type: string
+      unhealthy:
+        description: Unhealthy represents the body of the response returned when the collector is unhealthy. The default value is ""
+        type: string

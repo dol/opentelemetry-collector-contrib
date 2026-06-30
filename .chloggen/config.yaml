@@ -10,6 +10,7 @@ components:
     - all
     - cmd/codecovgen
     - cmd/golden
+    - cmd/schemacheck
     - cmd/opampsupervisor
     - cmd/otelcontribcol
     - cmd/oteltestbedcol

@@ -1,0 +1,16 @@
+$defs:
+  context_conditions:
+    description: ContextConditions is a wrapper struct for OTTL conditions.
+    type: object
+    properties:
+      conditions:
+        type: array
+        items:
+          type: string
+      context:
+        $ref: context_id
+      error_mode:
+        description: ErrorMode determines how the processor reacts to errors that occur while processing this group of conditions. When provided, it overrides the default Config ErrorMode.
+        $ref: /pkg/ottl.error_mode
+  context_id:
+    type: string

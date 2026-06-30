@@ -1,0 +1,11 @@
+$defs:
+  component_health_config:
+    type: object
+    properties:
+      include_permanent_errors:
+        type: boolean
+      include_recoverable_errors:
+        type: boolean
+      recovery_duration:
+        type: string
+        format: duration

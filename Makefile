@@ -733,6 +733,15 @@ SCHEMA_DIRS := $(shell find $(CURDIR) -path "*testdata*" -prune -o -path "*inter
 .PHONY: generate-schemas
 generate-schemas:
 	@$(foreach dir,$(SCHEMA_DIRS), go run $(SCHEMAGEN_PKG) $(abspath $(dir)) -o $(abspath $(dir));)
+	@cd $(SRC_ROOT)/cmd/schemacheck && go run . -root $(SRC_ROOT) -seed
+
+# Verify every in-repo $ref in every config.schema.yaml resolves to a backing
+# schema file. Fails on refs that schemagen seeding should have closed; refs into
+# mdatagen-owned packages are reported as warnings (use schemacheck -strict to
+# fail on those too).
+.PHONY: check-schemas
+check-schemas:
+	@cd $(SRC_ROOT)/cmd/schemacheck && go run . -root $(SRC_ROOT)
 
 .PHONY: checks
 checks:
@@ -748,4 +757,5 @@ checks:
 	$(MAKE) -j4 generate
 	$(MAKE) multimod-verify
 	$(MAKE) generate-schemas
+	$(MAKE) check-schemas
 	git diff --exit-code || (echo 'Some files need committing' && git status && exit 1)
